@@ -1,13 +1,10 @@
-from typing import Callable, Any
+from typing import Callable
 from jaxtyping import Array, Float, Scalar
-
-
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 import scipy as sp
 import numpy as np
-
 
 jax.config.update("jax_enable_x64", True)
 EPS = float(jnp.sqrt(jnp.finfo(float).eps))
@@ -18,16 +15,27 @@ def optimize_lhs_candidates(
     candidates: Float[Array, "n d"],
     extra_args: list = [],
     max_restarts: int = 0,
+    screening_loss: Callable | None = None,
     optimizer_options: dict = dict(maxiter=100, ftol=EPS, gtol=0.0),
 ) -> tuple[Float[Array, "d"], list]:
+    """Screen the candidates, then refine the best ones with L-BFGS-B.
+
+    screening_loss is an already batched value-only loss, taking every candidate at once.
+    """
     # only keep the best initial candidates
     extra_args = extra_args or [None] * len(candidates)
     loss_fn = acquisition_loss
-    losses = [
-        loss_fn(c)[0] if args is None else loss_fn(c, args)[0]
-        for c, args in zip(candidates, extra_args)
-    ]
-    candidates = candidates[np.argsort(losses)[:max_restarts]]
+    if screening_loss is None:
+        losses = [
+            loss_fn(c)[0] if args is None else loss_fn(c, args)[0]
+            for c, args in zip(candidates, extra_args)
+        ]
+    elif extra_args[0] is None:
+        losses = screening_loss(jnp.asarray(candidates))
+    else:
+        losses = screening_loss(jnp.asarray(candidates), jnp.asarray(extra_args))
+    best = np.argsort(losses)[:max_restarts]
+    candidates, extra_args = candidates[best], [extra_args[i] for i in best]
 
     # optimize each initial guesses with L-BFGS-B
     results = [

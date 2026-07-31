@@ -16,6 +16,15 @@ class TestFunction(Protocol):
     def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
 
 
+class ResidualActivation(eqx.Module):
+    """Activation as a module so its parameters stay traced instead of baked in as constants."""
+
+    f: Callable
+
+    def __call__(self, x: Scalar) -> Scalar:
+        return self.f((x[None] + 1.0) / 2.0) + jax.nn.relu(x)
+
+
 class MNIST(TestFunction):
     d: int = 1
 
@@ -40,28 +49,34 @@ class MNIST(TestFunction):
         self.n_runs = n_runs
 
         # load mnist dataset and preprocess (scale input to [0, 1])
-        train_dataset = torchvision.datasets.MNIST(root="./data", train=True, download=True)
-        test_dataset = torchvision.datasets.MNIST(root="./data", train=False, download=True)
+        train_dataset = torchvision.datasets.MNIST(
+            root="./data", train=True, download=True
+        )
+        test_dataset = torchvision.datasets.MNIST(
+            root="./data", train=False, download=True
+        )
         self.train_data: Float[Array, "n 28*28"] = jnp.array(train_dataset.data) / 255.0
         self.train_labels: Int[Array, "n"] = jnp.array(train_dataset.targets)
         self.test_data: Float[Array, "m 28*28"] = jnp.array(test_dataset.data) / 255.0
         self.test_labels: Int[Array, "m"] = jnp.array(test_dataset.targets)
 
+        # compile once per instance, so repeated calls reuse the same executables
+        self.jit_initialize = eqx.filter_jit(self.initialize)
+        self.jit_fit = eqx.filter_jit(self.fit)
+        self.jit_test = eqx.filter_jit(self.test)
+
     def __call__(self, f: Callable[[Float[Array, "1"]], Scalar]) -> Scalar:
-        init = eqx.filter_jit(lambda k: self.initialize(k, f))
-        fit = eqx.filter_jit(self.fit)
-        test = eqx.filter_jit(self.test)
         accuracy = []
         for key in jr.split(jr.key(self.seed), self.n_runs):
             key_init, key_fit = jr.split(key)
-            network = init(key_init)
-            network, train_losses = fit(network, key_fit)
-            test_loss, test_accuracy = test(network)
+            network = self.jit_initialize(key_init, f)
+            network, train_losses = self.jit_fit(network, key_fit)
+            test_loss, test_accuracy = self.jit_test(network)
             accuracy.append(test_accuracy)
         return 1 - jnp.array(accuracy).mean()
 
     def initialize(self, key: Key, f: Callable[[Float[Array, "1"]], Scalar]):
-        activation = lambda x: f((x[None] + 1.0) / 2.0) + jax.nn.relu(x)
+        activation = ResidualActivation(f)
         return eqx.nn.MLP(
             in_size=28 * 28,
             out_size=10,

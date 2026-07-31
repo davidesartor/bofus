@@ -5,26 +5,31 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-
 ################################################################################
 # region Kernel Profiles
 
 
 class Profile(Protocol):
-    def __call__(self, d: Float[Array, "..."]) -> Float[Array, "..."]: ...
+    """Kernel profile as a function of squared distance, which stays smooth at zero."""
+
+    def __call__(self, d2: Float[Array, "..."]) -> Float[Array, "..."]: ...
 
 
 class SquaredExponential(Profile):
-    def __call__(self, d: Float[Array, "..."]) -> Float[Array, "..."]:
-        k = jnp.exp(-0.5 * d**2)
-        return k
+    def __call__(self, d2: Float[Array, "..."]) -> Float[Array, "..."]:
+        return jnp.exp(-0.5 * d2)
 
 
 class Matern(Profile):
     def __init__(self, nu: float):
         self.nu = nu
 
-    def __call__(self, d: Float[Array, "..."]) -> Float[Array, "..."]:
+    def __call__(self, d2: Float[Array, "..."]) -> Float[Array, "..."]:
+        # sqrt has an infinite derivative at zero, so evaluate it away from the cusp and
+        # patch the value back in: matern kernels have no derivative at coincident points
+        coincident = d2 <= 0
+        d = jnp.sqrt(jnp.where(coincident, 1.0, d2))
+
         # TODO: add support for general nu
         if self.nu == 1 / 2:
             k = jnp.exp(-d)
@@ -34,7 +39,7 @@ class Matern(Profile):
             k = (1 + jnp.sqrt(5) * d + 5 / 3 * d**2) * jnp.exp(-jnp.sqrt(5) * d)
         else:
             raise ValueError(f"Unsupported nu={self.nu}")
-        return k
+        return jnp.where(coincident, 1.0, k)
 
 
 # endregion
@@ -46,12 +51,25 @@ class Matern(Profile):
 
 
 class Metric(Protocol):
+    """Pairwise squared distances, so profiles never differentiate a square root."""
+
     def __call__(
         self,
         rho: Float[Array, "..."],
         x1: Float[Array, "n d"],
         x2: Float[Array, "m d"],
     ) -> Float[Array, "n m"]: ...
+
+
+class Euclidean(Metric):
+    def __call__(
+        self,
+        rho: Float[Array, "#d"],
+        x1: Float[Array, "n d"],
+        x2: Float[Array, "m d"],
+    ) -> Float[Array, "n m"]:
+        v = (x1[:, None, :] - x2[None, :, :]) / rho
+        return jnp.sum(v**2, axis=-1)
 
 
 class Minkowski(Metric):
@@ -64,25 +82,20 @@ class Minkowski(Metric):
         x1: Float[Array, "n d"],
         x2: Float[Array, "m d"],
     ) -> Float[Array, "n m"]:
-        # define the distance function for a single pair of points
-        def dist(a: Float[Array, "d"], b: Float[Array, "d"]) -> Scalar:
+        # define the squared distance function for a single pair of points
+        def d2(a: Float[Array, "d"], b: Float[Array, "d"]) -> Scalar:
             v = (a - b) / rho
-            # use lax.cond to avoid propagating NaNs in the gradients for v=0.0
+            # the norm is not differentiable at v=0 for general p, so keep the branch
             return jax.lax.cond(
                 jnp.allclose(v, 0.0),
                 lambda: 0.0,
-                lambda: jax.numpy.linalg.norm(v, ord=self.p),
+                lambda: jax.numpy.linalg.norm(v, ord=self.p) ** 2,
             )
 
         # vectorize the distance function over pairs
-        dist = jax.vmap(dist, in_axes=(None, 0))  # vectorize over x2
-        dist = jax.vmap(dist, in_axes=(0, None))  # vectorize over x1
-        return dist(x1, x2)
-
-
-class Euclidean(Minkowski):
-    def __init__(self):
-        super().__init__(p=2)
+        d2 = jax.vmap(d2, in_axes=(None, 0))  # vectorize over x2
+        d2 = jax.vmap(d2, in_axes=(0, None))  # vectorize over x1
+        return d2(x1, x2)
 
 
 class Manhattan(Minkowski):
@@ -105,21 +118,24 @@ class Mahalanobis(Metric):
         x1: Float[Array, "n d"],
         x2: Float[Array, "m d"],
     ) -> Float[Array, "n m"]:
-        # define the distance function for a single pair of points
-        def dist(a: Float[Array, "d"], b: Float[Array, "d"]) -> Scalar:
+        # define the squared distance function for a single pair of points
+        def d2(a: Float[Array, "d"], b: Float[Array, "d"]) -> Scalar:
             cov_sqrt, is_lower = jsp.linalg.cho_factor(rho)
             v = jsp.linalg.solve_triangular(cov_sqrt, a - b, lower=is_lower)
-            # use lax.cond to avoid propagating NaNs in the gradients for v=0.0
+            if self.p == 2:
+                return jnp.sum(v**2)
+
+            # the norm is not differentiable at v=0 for general p, so keep the branch
             return jax.lax.cond(
                 jnp.allclose(v, 0.0),
                 lambda: 0.0,
-                lambda: jax.numpy.linalg.norm(v, ord=self.p),
+                lambda: jax.numpy.linalg.norm(v, ord=self.p) ** 2,
             )
 
         # vectorize the distance function over pairs
-        dist = jax.vmap(dist, in_axes=(None, 0))  # vectorize over x2
-        dist = jax.vmap(dist, in_axes=(0, None))  # vectorize over x1
-        return dist(x1, x2)
+        d2 = jax.vmap(d2, in_axes=(None, 0))  # vectorize over x2
+        d2 = jax.vmap(d2, in_axes=(0, None))  # vectorize over x1
+        return d2(x1, x2)
 
 
 # endregion
