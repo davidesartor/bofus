@@ -12,6 +12,9 @@
 sweep=${1:-main}
 deadline_hours=${2:-72}
 
+# archived campaigns each keep their own tree under results/
+RESULTS_DIR=${RESULTS_DIR:-results/neurips}
+
 ################################################################################
 # WHAT TO RUN
 
@@ -19,10 +22,6 @@ deadline_hours=${2:-72}
 # no more: a shorter wall backfills sooner, but one that a run overruns loses the seed and earns it
 # back next pass
 declare -A TARGET_RESOURCES=(
-    [sinc1d]="6G 0:30:00"
-    [sinc2d]="6G 0:30:00"
-    [sinc3d]="6G 0:30:00"
-    [sinc4d]="6G 0:30:00"
     [gramacylee]="8G 0:30:00"
     [ackley]="8G 0:30:00"
     [hartmann]="8G 0:30:00"
@@ -37,10 +36,6 @@ declare -A TARGET_RESOURCES=(
 
 # the budget goes in target order, so the short seeds are scheduled first
 targets=(
-    sinc1d
-    sinc2d
-    sinc3d
-    sinc4d
     brachistochrone
     pinwheel
     gramacylee
@@ -56,12 +51,14 @@ targets=(
 variants=(
     "random"
     "ours"
+    "ours_adaptive"
     "vien"
     "shilton"
     "vellanky"
     "kundu"
     "vien --disable_natural_gradient"
     "ours --disable_natural_gradient"
+    "ours_adaptive --disable_natural_gradient"
     "ours --constrain_order"
     "ours --disable_natural_gradient --constrain_order"
     "ours --lstsq_rcond=1e-10"
@@ -76,7 +73,7 @@ variants=(
 
 lengthscales=(0.4 0.2 0.1 0.05)
 profiles=(rbf matern52 matern32 matern12)
-seeds=($(seq 0 15))
+seeds=($(seq 0 31))
 
 # qos normal caps a user at 2000 submitted and 1000 running (sacctmgr show qos), and the tally in
 # the main loop counts every job of ours, so filling the cap exactly is safe: a refused sbatch is
@@ -95,24 +92,26 @@ mkdir -p "$MANIFESTS" logs/
 
 # vellanky's parametrization is 1d only, and the permutation-simplex ablation is defined for the
 # ridges and the physical targets, so neither variant runs on every target
-MULTIDIM_FNS="ackley|hartmann|rosenbrock|michalewicz|pendulum|sinc2d|sinc3d|sinc4d"
+MULTIDIM_FNS="ackley|hartmann|rosenbrock|michalewicz|pendulum"
 CONSTRAIN_ORDER_FNS="gramacylee|ackley|hartmann|rosenbrock|michalewicz|brachistochrone|hopper|pendulum"
 
 variant_runs_on() {
-    local variant=$1 target_fn=$2
+    local variant=$1 target_fn=$2 lengthscale=$3
     [[ "${variant%% *}" == "vellanky" && "$target_fn" =~ ^($MULTIDIM_FNS)$ ]] && return 1
     [[ "$variant" == *"--constrain_order"* && ! "$target_fn" =~ ^($CONSTRAIN_ORDER_FNS)$ ]] && return 1
+    # ours_adaptive searches the whole lengthscale range itself, one run covers the sweep
+    [[ "${variant%% *}" == "ours_adaptive" && "$lengthscale" != "0.2" ]] && return 1
     return 0
 }
 
-# suffixes accumulate in the same order run.py builds save_dir, so combined flags agree
+# suffixes accumulate in the same order bofus-run builds save_dir, so combined flags agree
 variant_to_dir() {
     local variant=$1 dir=${1%% *}
     [[ "$variant" == *"--disable_natural_gradient"* ]] && dir+="_no_natural_grad"
     [[ "$variant" == *"--sample_candidates_from_gp"* ]] && dir+="_sample_from_gp"
     [[ "$variant" == *"--reduced_grid"* ]] && dir+="_reduced_grid"
     [[ "$variant" == *"--constrain_order"* ]] && dir+="_constrain_order"
-    # run.py formats these suffixes with %.0e, so the flags are written in that form already,
+    # bofus-run formats these suffixes with %.0e, so the flags are written in that form already,
     # zero-padded exponent included
     [[ "$variant" =~ --lstsq_rcond=([0-9.e+-]+) ]] && dir+="_rcond_${BASH_REMATCH[1]}"
     [[ "$variant" =~ --fixed_k=([0-9]+) ]] && dir+="_fixed_k_${BASH_REMATCH[1]}"
@@ -120,19 +119,20 @@ variant_to_dir() {
 }
 
 # a run is one task's whole workload, so it carries the variant directory the task needs to name
-# its own result file rather than re-deriving the mapping inside the job
+# its own result file rather than re-deriving the mapping inside the job; the seed varies slowest,
+# so a capped submission covers the whole grid at low seed counts rather than finishing every seed
+# of a few configs and none of the rest
 declare -A TARGET_RUNS=() VARIANT_DIR=()
 for target_fn in "${targets[@]}"; do
     runs=()
+    for seed in "${seeds[@]}"; do
     for profile in "${profiles[@]}"; do
     for lengthscale in "${lengthscales[@]}"; do
     for variant in "${variants[@]}"; do
-        variant_runs_on "$variant" "$target_fn" || continue
-        # one subshell per variant, not per run: the seed loop below runs a few hundred thousand times
+        variant_runs_on "$variant" "$target_fn" "$lengthscale" || continue
         variant_dir=${VARIANT_DIR[$variant]:=$(variant_to_dir "$variant")}
-        for seed in "${seeds[@]}"; do
-            runs+=("$profile $lengthscale $variant_dir $seed $variant")
-        done
+        runs+=("$profile $lengthscale $variant_dir $seed $variant")
+    done
     done
     done
     done
@@ -196,7 +196,7 @@ submit_sweep() {
     local runs=() profile lengthscale variant_dir seed
     while read -r run; do
         read -r profile lengthscale variant_dir seed _ <<< "$run"
-        [[ -e "results/$target_fn/$variant_dir/${profile}_lengthscale_${lengthscale}/seed_${seed}.pkl" ]] && continue
+        [[ -e "$RESULTS_DIR/$target_fn/$variant_dir/${profile}_lengthscale_${lengthscale}/seed_${seed}.pkl" ]] && continue
         [[ -n "${INFLIGHT["$target_fn $run"]:-}" ]] && continue
         runs+=("$run")
         (( ${#runs[@]} >= budget )) && break
@@ -237,13 +237,14 @@ mkdir -p "\$JAX_COMPILATION_CACHE_DIR"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NPY_NUM_THREADS=1
 
 # a requeued task may find its seed already done
-result=results/${target_fn}/\${variant_dir}/\${profile}_lengthscale_\${lengthscale}/seed_\${seed}.pkl
+export RESULTS_DIR=${RESULTS_DIR}
+result=${RESULTS_DIR}/${target_fn}/\${variant_dir}/\${profile}_lengthscale_\${lengthscale}/seed_\${seed}.pkl
 [[ -e "\$result" ]] && exit 0
 
 log_dir=logs/${target_fn}/\${variant_dir}_\${profile}_\${lengthscale}
 mkdir -p "\$log_dir"
 
-uv run run.py \
+uv run bofus-run \
     --method=\$method \
     --profile=\$profile \
     --target_fn=${target_fn} \
