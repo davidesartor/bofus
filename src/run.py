@@ -14,13 +14,14 @@ import time
 import os
 import pickle
 
-import vlse
-
-from src import gp, kernels, acquisition, rkhs, targets
+from bofus import gp, kernels, acquisition, rkhs
+import targets
 
 jax.config.update("jax_enable_x64", True)
 
 Candidate = rkhs.Function | rkhs.BernsteinPolynomial
+
+RESULTS_DIR = os.environ.get("RESULTS_DIR", "results/neurips")
 
 VERBOSE = False
 
@@ -162,6 +163,53 @@ def rkhs_loss(
     if natural_gradient:
         # applying the same chart inside the preconditioner yields the pullback metric
         G = rkhs_preconditioner(p, p, kernel, constrain_order)
+        grad = precondition(G, grad, rcond)
+    return val, grad
+
+
+def adaptive_function(p: Float[Array, "k*(d+m)+d"], d: int, m: int) -> rkhs.Function:
+    """Decode a candidate that carries its own lengthscale in the trailing d entries."""
+    # the lengthscale is optimized in log scale
+    log_lo, log_hi = np.log(rkhs.RHO_RANGE[0]), np.log(rkhs.RHO_RANGE[1])
+    rho = jnp.exp(p[-d:] * (log_hi - log_lo) + log_lo)
+    kernel = rkhs.RKHS(kernels.Euclidean(), kernels.SquaredExponential(), rho, m)
+    return rkhs.Function.from_array(kernel, p[:-d].reshape(-1, d + m))
+
+
+def adaptive_ei(p: Float[Array, "k*(d+m)+d"], posterior, d: int, m: int) -> Scalar:
+    """EI of the function parametrized by basis points plus its own lengthscale."""
+    mu, cov = posterior.predict([adaptive_function(p, d, m)])
+    return negative_log_ei(mu, cov, posterior.y_best)
+
+
+@partial(jax.jacobian, argnums=1)
+@partial(jax.jacobian, argnums=0)
+def adaptive_preconditioner(
+    p1, p2, ambient: rkhs.RKHS, d: int, m: int
+) -> Float[Array, "n n"]:
+    f1, f2 = adaptive_function(p1, d, m), adaptive_function(p2, d, m)
+    return rkhs.ambient_inner_product(ambient.rho, f1, f2)
+
+
+@eqx.filter_jit
+def adaptive_screening(ps, posterior, d: int, m: int) -> Float[Array, "n"]:
+    return jax.vmap(adaptive_ei, in_axes=(0, None, None, None))(ps, posterior, d, m)
+
+
+@eqx.filter_jit
+def adaptive_loss(
+    p,
+    posterior,
+    ambient: rkhs.RKHS,
+    d: int,
+    m: int,
+    natural_gradient: bool = True,
+    rcond: float | None = LSTSQ_RCOND,
+):
+    val, grad = jax.value_and_grad(adaptive_ei)(p, posterior, d, m)
+    if natural_gradient:
+        # applying the same chart inside the preconditioner yields the pullback metric
+        G = adaptive_preconditioner(p, p, ambient, d, m)
         grad = precondition(G, grad, rcond)
     return val, grad
 
@@ -373,7 +421,10 @@ class Runner:
         """Rebuild whatever depends on k, before the acquisitions at that k start."""
 
     def fit(self) -> None:
-        self.surrogate_model = self.surrogate_model.fit(self.fs, self.ys)
+        # observations are append-only, so the previous distance block stays valid
+        self.surrogate_model = self.surrogate_model.fit(
+            self.fs, self.ys, cached_dists=self.surrogate_model.d2
+        )
 
     def steps_per_k(self, k: int) -> int:
         return self.acquisitions_each_k
@@ -505,8 +556,8 @@ class Ours(Runner):
         ps = self.sample_candidates(k, self.acquisition_raw_samples)
         posterior, kernel = self.posterior, self.kernel
         p, _ = acquisition.optimize_lhs_candidates(
-            acquisition_loss=lambda p: rkhs_loss(
-                p,
+            acquisition_loss=rkhs_loss,
+            loss_args=(
                 posterior,
                 kernel,
                 self.use_natural_gradient,
@@ -518,6 +569,53 @@ class Ours(Runner):
             screening_loss=lambda ps: rkhs_screening(
                 ps, posterior, kernel, self.constrain_order
             ),
+        )
+        return [self.to_function(p, k)]
+
+
+class OursAdaptive(Runner):
+    """Ours, with each candidate's lengthscale searched along with its basis points."""
+
+    def __init__(
+        self,
+        *args,
+        use_natural_gradient: bool = True,
+        lstsq_rcond: float | None = LSTSQ_RCOND,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.use_natural_gradient = use_natural_gradient
+        self.lstsq_rcond = lstsq_rcond
+
+    def to_function(self, p: Float[Array, "k*(d+m)+d"], k: int) -> rkhs.Function:
+        return adaptive_function(p, self.kernel.d, self.kernel.m)
+
+    def initial_candidates(self) -> list[rkhs.Function]:
+        self.on_new_k(self.minimum_k)
+        ps = self.candidate_sampler.random(n=self.initial_acquisitions)
+        return [self.to_function(p, self.minimum_k) for p in ps]
+
+    def on_new_k(self, k: int) -> None:
+        # the trailing d entries carry the candidate's own lengthscale
+        self.candidate_sampler = self.lhs(k * self.p_dim + self.kernel.d)
+
+    def propose(self, k: int) -> list[rkhs.Function]:
+        ps = jnp.array(self.candidate_sampler.random(n=self.acquisition_raw_samples))
+        posterior, ambient = self.posterior, self.surrogate_model.ambient
+        d, m = self.kernel.d, self.kernel.m
+        p, _ = acquisition.optimize_lhs_candidates(
+            acquisition_loss=adaptive_loss,
+            loss_args=(
+                posterior,
+                ambient,
+                d,
+                m,
+                self.use_natural_gradient,
+                self.lstsq_rcond,
+            ),
+            candidates=ps,
+            max_restarts=self.acquisition_max_restarts,
+            screening_loss=lambda ps: adaptive_screening(ps, posterior, d, m),
         )
         return [self.to_function(p, k)]
 
@@ -557,7 +655,8 @@ class Vellanky(Runner):
     def propose(self, degree: int) -> list[rkhs.BernsteinPolynomial]:
         surrogate_model = self.surrogate_model
         c, _ = acquisition.optimize_lhs_candidates(
-            acquisition_loss=lambda c: vector_loss(c, surrogate_model),
+            acquisition_loss=vector_loss,
+            loss_args=(surrogate_model,),
             candidates=self.candidate_sampler.random(n=self.acquisition_raw_samples),
             max_restarts=self.acquisition_max_restarts,
             screening_loss=lambda cs: vector_screening(cs, surrogate_model),
@@ -588,7 +687,8 @@ class Kundu(Runner):
         basis_fs = self.sample_basis(n)
         posterior, kernel = self.posterior, self.kernel
         c, _ = acquisition.optimize_lhs_candidates(
-            acquisition_loss=lambda c: subspace_loss(c, basis_fs, posterior, kernel),
+            acquisition_loss=subspace_loss,
+            loss_args=(tuple(basis_fs), posterior, kernel),
             candidates=self.candidate_sampler.random(n=self.acquisition_raw_samples),
             max_restarts=self.acquisition_max_restarts,
             screening_loss=lambda cs: subspace_screening(
@@ -641,9 +741,8 @@ class Vien(Runner):
         y0, x0 = self.expanded_candidates(k)
         posterior, kernel = self.posterior, self.kernel
         y, x = acquisition.optimize_lhs_candidates(
-            acquisition_loss=lambda y, x: grid_loss(
-                y,
-                x,
+            acquisition_loss=grid_loss,
+            loss_args=(
                 posterior,
                 kernel,
                 self.use_natural_gradient,
@@ -700,9 +799,8 @@ class Shilton(Runner):
 
         posterior, kernel = self.posterior, self.kernel
         c, _ = acquisition.optimize_lhs_candidates(
-            acquisition_loss=lambda c: prior_loss(
-                c, xs_grid, ys_grids, b_grid, posterior, kernel
-            ),
+            acquisition_loss=prior_loss,
+            loss_args=(xs_grid, ys_grids, b_grid, posterior, kernel),
             candidates=self.candidate_sampler.random(n=self.acquisition_raw_samples),
             max_restarts=self.acquisition_max_restarts,
             screening_loss=lambda cs: prior_screening(
@@ -714,31 +812,23 @@ class Shilton(Runner):
         ]
 
 
-if __name__ == "__main__":
+def main():
+    global VERBOSE
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--method",
-        choices=["random", "ours", "vellanky", "vien", "kundu", "shilton"],
-    )
-    parser.add_argument(
-        "--target_fn",
         choices=[
-            "sinc1d",
-            "sinc2d",
-            "sinc3d",
-            "sinc4d",
-            "gramacylee",
-            "rosenbrock",
-            "ackley",
-            "hartmann",
-            "michalewicz",
-            "pendulum",
-            "pinwheel",
-            "brachistochrone",
-            "mnist",
-            "hopper",
+            "random",
+            "ours",
+            "ours_adaptive",
+            "vellanky",
+            "vien",
+            "kundu",
+            "shilton",
         ],
     )
+    parser.add_argument("--target_fn", choices=list(targets.TARGET_FNS))
     parser.add_argument("--lengthscale", type=float, required=True)
     parser.add_argument(
         "--profile", choices=["rbf", "matern52", "matern32", "matern12"]
@@ -769,22 +859,7 @@ if __name__ == "__main__":
         args.minimum_k = args.maximum_k = args.fixed_k
 
     # problem setup
-    target_fn = {
-        "sinc1d": lambda: targets.SincProjection(d=1),
-        "sinc2d": lambda: targets.SincProjection(d=2),
-        "sinc3d": lambda: targets.SincProjection(d=3),
-        "sinc4d": lambda: targets.SincProjection(d=4),
-        "gramacylee": lambda: targets.Ridge(vlse.GramacyLee(normalized=True)),
-        "ackley": lambda: targets.Ridge(vlse.Ackley(d=2, normalized=True)),
-        "hartmann": lambda: targets.Ridge(vlse.Hartmann3(normalized=True)),
-        "rosenbrock": lambda: targets.Ridge(vlse.Rosenbrock(d=4, normalized=True)),
-        "michalewicz": lambda: targets.Ridge(vlse.Michalewicz(d=5, normalized=True)),
-        "pendulum": targets.Pendulum,
-        "pinwheel": targets.PinWheel,
-        "brachistochrone": targets.Brachistochrone,
-        "mnist": targets.MNIST,
-        "hopper": targets.HoppingRobot,
-    }[args.target_fn]()
+    target_fn = targets.make_target(args.target_fn)
     kernel = rkhs.RKHS(
         metric=kernels.Euclidean(),
         profile=kernels.SquaredExponential(),
@@ -799,9 +874,20 @@ if __name__ == "__main__":
         "matern32": kernels.Matern(nu=3 / 2),
         "matern52": kernels.Matern(nu=5 / 2),
     }[args.profile]
+    # adaptive candidates need an ambient below their range, so that l1 + l2 - l0 > 0
+    ambient = rkhs.RKHS(
+        metric=kernels.Euclidean(),
+        profile=kernels.SquaredExponential(),
+        rho=jnp.full(target_fn.d, rkhs.RHO_RANGE[0]),
+        m=getattr(target_fn, "m", 1),
+    )
     runner_cls, surrogate_model = {
         "random": (Random, None),
         "ours": (Ours, gp.FunctionalGaussianProcess(profile=profile)),
+        "ours_adaptive": (
+            OursAdaptive,
+            gp.FunctionalGaussianProcess(profile=profile, ambient=ambient),
+        ),
         "vellanky": (Vellanky, gp.GaussianProcess(profile=profile)),
         "kundu": (Kundu, gp.FunctionalGaussianProcess(profile=profile)),
         "vien": (Vien, gp.FunctionalGaussianProcess(profile=profile)),
@@ -842,7 +928,7 @@ if __name__ == "__main__":
     ).run()
 
     # save results
-    save_dir = f"results/neurips/{args.target_fn}/{args.method}"
+    save_dir = f"{RESULTS_DIR}/{args.target_fn}/{args.method}"
     if args.disable_natural_gradient:
         save_dir += f"_no_natural_grad"
     if args.sample_candidates_from_gp:
@@ -860,3 +946,7 @@ if __name__ == "__main__":
     save_path = f"{save_dir}/seed_{args.seed}"
     pickle.dump(downcast(results), open(f"{save_path}.pkl", "wb"))
     vprint(f"Results saved to {save_path}.pkl")
+
+
+if __name__ == "__main__":
+    main()

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 
-from .. import kernels, rkhs
+from bofus import kernels, rkhs
 
 
 class Profile(Protocol):

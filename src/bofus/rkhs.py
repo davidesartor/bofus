@@ -11,6 +11,8 @@ from . import kernels
 jax.config.update("jax_enable_x64", True)
 EPS = float(jnp.sqrt(jnp.finfo(float).eps))
 
+RHO_RANGE = (0.05, 0.4)  # candidate lengthscales, same range the sweeps scan
+
 
 class RKHS(NamedTuple):
     """Separable kernel over m independent outputs: K(x, x') = profile(metric(x, x')) I."""
@@ -75,6 +77,23 @@ def inner_product(f1: Function, f2: Function) -> Scalar:
     """RKHS inner product, summed over the independent outputs."""
     Kxx = f1.kernel(f1.x, f2.x)
     return jnp.einsum("kl,ki,li->", Kxx, f1.a, f2.a)
+
+
+@eqx.filter_jit
+def ambient_inner_product(
+    ambient_rho: Float[Array, "d"], f1: Function, f2: Function
+) -> Scalar:
+    """Inner product of squared exponential functions with their own lengthscales,
+    hosted in a wider squared exponential space, see ambient.tex."""
+    # diagonals of the inverse precisions A_p^-1, with A_p = diag(1 / rho_p^2)
+    l0, l1, l2 = ambient_rho**2, f1.kernel.rho**2, f2.kernel.rho**2
+    ls = l1 + l2 - l0  # diagonal of (A1^-1 + A2^-1 - A0^-1)
+
+    # |A1|^-1/2 |A2|^-1/2 |A0|^1/2 |A1^-1 + A2^-1 - A0^-1|^-1/2
+    scale = jnp.sqrt(jnp.prod(l1 * l2 / (l0 * ls)))
+
+    Kxx = kernels.SquaredExponential()(kernels.Euclidean()(jnp.sqrt(ls), f1.x, f2.x))
+    return scale * jnp.einsum("kl,ki,li->", Kxx, f1.a, f2.a)
 
 
 class BernsteinPolynomial(NamedTuple):

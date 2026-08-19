@@ -312,6 +312,7 @@ class Basis(NamedTuple):
     kernel: rkhs.RKHS
     x: Float[Array, "n k d"]
     a: Float[Array, "n k m"]
+    rho: Float[Array, "n d"] = None  # per-function lengthscales, for the ambient metric
 
     @classmethod
     def stack(
@@ -323,12 +324,15 @@ class Basis(NamedTuple):
         pad = lambda z: jnp.concat([z, jnp.zeros((k - len(z), *z.shape[1:]))])
         x = jnp.stack([pad(f.x) for f in fs])
         a = jnp.stack([pad(f.a) for f in fs])
+        rho = jnp.stack([f.kernel.rho for f in fs])
 
         # padding functions keep the shapes constant as observations accumulate
         if n is not None and n > len(fs):
             x = jnp.concat([x, jnp.zeros((n - len(fs), *x.shape[1:]))])
             a = jnp.concat([a, jnp.zeros((n - len(fs), *a.shape[1:]))])
-        return cls(kernel=fs[0].kernel, x=x, a=a)
+            # unit padding lengthscales keep the ambient distances finite
+            rho = jnp.concat([rho, jnp.ones((n - len(fs), rho.shape[-1]))])
+        return cls(kernel=fs[0].kernel, x=x, a=a, rho=rho)
 
 
 @eqx.filter_jit
@@ -357,6 +361,45 @@ def rkhs_sq_distances(basis1: Basis, basis2: Basis) -> Float[Array, "m n"]:
 
     # cancellation can push coincident functions slightly below zero
     return jnp.maximum(d2, 0.0)
+
+
+@eqx.filter_jit
+def ambient_inner_products(
+    ambient_rho: Float[Array, "d"], basis1: Basis, basis2: Basis
+) -> Float[Array, "m n"]:
+    """Pairwise ambient inner products, for functions that carry their own lengthscale."""
+
+    # the mixing scale differs per pair of lengthscales, so pairs cannot share
+    # one flattened kernel evaluation the way rkhs_inner_products does
+    def inner(rho1, x1, a1, rho2, x2, a2) -> Scalar:
+        f1 = rkhs.Function(basis1.kernel._replace(rho=rho1), x1, a1)
+        f2 = rkhs.Function(basis2.kernel._replace(rho=rho2), x2, a2)
+        return rkhs.ambient_inner_product(ambient_rho, f1, f2)
+
+    inner = jax.vmap(inner, in_axes=(None, None, None, 0, 0, 0))
+    inner = jax.vmap(inner, in_axes=(0, 0, 0, None, None, None))
+    return inner(basis1.rho, basis1.x, basis1.a, basis2.rho, basis2.x, basis2.a)
+
+
+@eqx.filter_jit
+def ambient_sq_distances(
+    ambient_rho: Float[Array, "d"], basis1: Basis, basis2: Basis
+) -> Float[Array, "m n"]:
+    """Pairwise squared ambient distances between two batches of functions."""
+    sq_norms1 = jnp.diag(ambient_inner_products(ambient_rho, basis1, basis1))
+    sq_norms2 = jnp.diag(ambient_inner_products(ambient_rho, basis2, basis2))
+    d2 = sq_norms1[:, None] + sq_norms2[None, :]
+    d2 = d2 - 2 * ambient_inner_products(ambient_rho, basis1, basis2)
+
+    # cancellation can push coincident functions slightly below zero
+    return jnp.maximum(d2, 0.0)
+
+
+def sq_distances(ambient: rkhs.RKHS | None, basis1: Basis, basis2: Basis):
+    """Squared distances between candidate batches, ambient when one is set."""
+    if ambient is None:
+        return rkhs_sq_distances(basis1, basis2)
+    return ambient_sq_distances(ambient.rho, basis1, basis2)
 
 
 @eqx.filter_jit
@@ -405,10 +448,13 @@ class FunctionalPosterior(eqx.Module):
     Koo_lu: tuple
     Koo_inv_sum: Scalar
 
+    # reference space the candidates are compared in, None for the shared fixed kernel
+    ambient: rkhs.RKHS | None = None
+
     @eqx.filter_jit
     def predict(self, fs: list[rkhs.Function]) -> Gaussian:
         basis = Basis.stack(fs)
-        d2 = lambda b1, b2: rkhs_sq_distances(b1, b2) / self.rho
+        d2 = lambda b1, b2: sq_distances(self.ambient, b1, b2) / self.rho
         Kxx = self.nu * self.profile(d2(basis, basis))
         Kox = self.nu * self.profile(d2(self.basis, basis))
 
@@ -429,6 +475,9 @@ class FunctionalGaussianProcess(Module):
     # kernel definition
     profile: kernels.Profile = kernels.SquaredExponential()
 
+    # reference space the candidates are compared in, None for the shared fixed kernel
+    ambient: rkhs.RKHS = eqx.field(default=None)
+
     # model parameters
     rho: Scalar = eqx.field(default=None)
     g: Scalar = eqx.field(default=None)
@@ -443,9 +492,12 @@ class FunctionalGaussianProcess(Module):
     Koo: Float[Array, "n n"] = eqx.field(default=None)
     posterior: FunctionalPosterior = eqx.field(default=None)
 
+    # rho-independent, so the next fit can extend it instead of rebuilding it
+    d2: Float[Array, "n n"] = eqx.field(default=None)
+
     @eqx.filter_jit
     def metric(self, f1: rkhs.Function, f2: rkhs.Function) -> Scalar:
-        d = rkhs_sq_distances(Basis.stack([f1]), Basis.stack([f2])) ** 0.5
+        d = sq_distances(self.ambient, Basis.stack([f1]), Basis.stack([f2])) ** 0.5
         return d.squeeze()
 
     @eqx.filter_jit
@@ -457,16 +509,41 @@ class FunctionalGaussianProcess(Module):
     ) -> Float[Array, "m n"]:
         basis1 = fs1 if isinstance(fs1, Basis) else Basis.stack(fs1)
         basis2 = fs2 if isinstance(fs2, Basis) else Basis.stack(fs2)
-        return self.profile(rkhs_sq_distances(basis1, basis2) / rho)
+        return self.profile(sq_distances(self.ambient, basis1, basis2) / rho)
 
     def predict(self, fs: list[rkhs.Function]) -> Gaussian:
         return self.posterior.predict(fs)
+
+    def extend_sq_distances(
+        self,
+        basis: Basis,
+        fs: list[rkhs.Function],
+        cached: Float[Array, "m m"] | None,
+    ) -> Float[Array, "N N"]:
+        """Squared distances of the padded basis, reusing a previous fit's real block.
+
+        Assumes fs[:m] are the functions the cache was built from, in order.
+        Distances do not depend on rho or g, so a cache stays valid across refits.
+        """
+        m = 0 if cached is None else len(cached)
+        if m == 0 or m > len(fs):
+            return sq_distances(self.ambient, basis, basis)
+
+        N = len(basis.x)
+        d2 = jnp.zeros((N, N)).at[:m, :m].set(cached)
+        if len(fs) > m:
+            # the new block is padded to its own stable size, so shapes stay logarithmic
+            new = Basis.stack(fs[m:], n=padded_to(len(fs) - m), k=basis.x.shape[1])
+            cross = sq_distances(self.ambient, basis, new)[:, : len(fs) - m]
+            d2 = d2.at[:, m : len(fs)].set(cross).at[m : len(fs), :].set(cross.T)
+        return d2
 
     def fit(
         self,
         fs: list[rkhs.Function],
         ys: Float[Array, "n"],
         *,
+        cached_dists: Float[Array, "m m"] | None = None,
         warmstart: bool = False,
         lengthscale_range: tuple[float, float] | None = None,
         nugget_range: tuple[float, float] = DEFAULT_NUGGET_RANGE,
@@ -483,7 +560,7 @@ class FunctionalGaussianProcess(Module):
         padded_ys = jnp.zeros(N).at[:n].set(ys)
 
         # precalc the metric to speedup mle calls
-        d2 = rkhs_sq_distances(basis, basis)
+        d2 = self.extend_sq_distances(basis, fs, cached_dists)
 
         def verbose_loss(params: Float[Array, "2"]):
             val, grad = mle_loss(params, self.profile, d2, padded_ys, mask)
@@ -532,6 +609,7 @@ class FunctionalGaussianProcess(Module):
         scaled_Koo = scaled_Koo + jnp.diag(1 - mask)
         posterior = FunctionalPosterior(
             profile=self.profile,
+            ambient=self.ambient,
             rho=rho,
             nu=nu,
             b=b,
@@ -553,6 +631,7 @@ class FunctionalGaussianProcess(Module):
             b=b,
             Koo=padded_Koo[:n, :n],
             posterior=posterior,
+            d2=d2[:n, :n],
             observed_fs=fs,
             observed_ys=ys,
         )

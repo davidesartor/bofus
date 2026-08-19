@@ -17,7 +17,7 @@ from tqdm import tqdm
 import pickle
 
 RESULTS_DIR = os.environ.get("RESULTS_DIR", "results/neurips")
-PLOTS_DIR = os.environ.get("PLOTS_DIR", "plots")
+PLOTS_DIR = os.environ.get("PLOTS_DIR", "results/neurips/plots")
 
 # every running best panel uses this rect, so the tick label gutter is identical
 AXES_RECT = (0.22, 0.13, 0.75, 0.79)
@@ -114,7 +114,7 @@ def widen_ylim_to_decade(ax):
 @functools.cache
 def brachistochrone_optimal_time() -> float:
     """Cycloid travel time, the constant the recorded brachistochrone y is offset by."""
-    from src.targets import Brachistochrone
+    from targets import Brachistochrone
 
     _, optimal_time = Brachistochrone().find_brachistochrone()
     return float(optimal_time)
@@ -465,7 +465,7 @@ def plot_mnist_activations(df: pd.DataFrame, save_dir: str, methods: dict[str, s
 def plot_brachistochrone_path(df: pd.DataFrame, save_dir: str, methods: dict[str, str]):
     os.makedirs(save_dir, exist_ok=True)
     df = df[df["target_fn"] == "brachistochrone"]
-    from src.targets import Brachistochrone
+    from targets import Brachistochrone
 
     targ = Brachistochrone()
     method_colors = {m: f"C{i}" for i, m in enumerate(methods.keys())}
@@ -513,7 +513,7 @@ def animate_hopper(df: pd.DataFrame, save_dir: str, methods: dict[str, str]):
     os.makedirs(save_dir, exist_ok=True)
     df = df[df["target_fn"] == "hopper"]
     from matplotlib.animation import PillowWriter
-    from src.targets.hopper import HoppingRobot, keypoints
+    from targets.hopper import HoppingRobot, keypoints
 
     robot = HoppingRobot()
     ts = np.arange(robot.n_steps) / robot.n_steps
@@ -574,26 +574,17 @@ def animate_hopper(df: pd.DataFrame, save_dir: str, methods: dict[str, str]):
 
 
 def make_ridge(name: str):
-    """Ridge target, matching the definitions in run.py."""
-    import vlse
+    """Ridge target, matching the registry the runs use."""
+    import targets
 
-    from src import targets
-
-    profiles = {
-        "gramacylee": vlse.GramacyLee(normalized=True),
-        "ackley": vlse.Ackley(d=2, normalized=True),
-        "hartmann": vlse.Hartmann3(normalized=True),
-        "rosenbrock": vlse.Rosenbrock(d=4, normalized=True),
-        "michalewicz": vlse.Michalewicz(d=5, normalized=True),
-    }
-    return targets.Ridge(profiles[name])
+    return targets.make_target(name)
 
 
 def sample_rkhs_functions(
     d: int, n: int, basis_points: int, lengthscale: float, seed: int
 ) -> list:
     """Random RKHS functions, drawn like the initial acquisitions in run.py."""
-    from src import kernels, rkhs
+    from bofus import kernels, rkhs
 
     kernel = rkhs.RKHS(
         metric=kernels.Euclidean(),
@@ -616,7 +607,8 @@ def monte_carlo_evaluator(target, kernel):
     rather than paying a dispatch per example, and the (d, modes, n) array weights_at
     broadcasts to is never materialized. f travels as its arrays, the kernel is shared.
     """
-    from src import rkhs, targets
+    from bofus import rkhs
+    import targets
 
     @functools.partial(jax.jit, static_argnames="n")
     def value(n: int, key, x: jnp.ndarray, a: jnp.ndarray):
@@ -710,7 +702,7 @@ def plot_ridge_convergence(
         list(tqdm(pool.map(panel, names), total=len(names)))
 
 
-if __name__ == "__main__":
+def main():
     ##############################################################################
     # load data
     print("Loading data...")
@@ -768,6 +760,7 @@ if __name__ == "__main__":
         save_dir=f"{PLOTS_DIR}/method_comparison",
         methods={
             "ours_no_natural_grad": "ours",
+            "ours_adaptive_no_natural_grad": "Ours (adaptive rho)",
             "kundu": "Kundu",
             "vien": "Vien",
             "shilton": "Shilton",
@@ -778,24 +771,16 @@ if __name__ == "__main__":
     ################################################################################
     # NATURAL GRADIENT ABLATIONS
     print("Plotting natural gradient ablations...")
-    plot_running_best(
-        df=ys_filtered,
-        title=f"",
-        save_dir=f"{PLOTS_DIR}/natural_gradient_ablation_ours",
-        methods={
-            f"ours": f"Natural Gradient",
-            f"ours_no_natural_grad": f"Euclidean Gradient",
-        },
-    )
-    plot_running_best(
-        df=ys_filtered,
-        title=f"",
-        save_dir=f"{PLOTS_DIR}/natural_gradient_ablation_vien",
-        methods={
-            f"vien": f"Natural Gradient",
-            f"vien_no_natural_grad": f"Euclidean Gradient",
-        },
-    )
+    for method in ["ours", "ours_adaptive", "vien"]:
+        plot_running_best(
+            df=ys_filtered,
+            title=f"",
+            save_dir=f"{PLOTS_DIR}/natural_gradient_ablation_{method}",
+            methods={
+                f"{method}": f"Natural Gradient",
+                f"{method}_no_natural_grad": f"Euclidean Gradient",
+            },
+        )
 
     ################################################################################
     # PRECONDITIONER REGULARIZATION ABLATION
@@ -900,6 +885,7 @@ if __name__ == "__main__":
         methods={
             "random": "Random",
             "ours_no_natural_grad": "Ours",
+            "ours_adaptive_no_natural_grad": "Ours (adaptive rho)",
             "kundu": "Kundu",
             "vien": "Vien",
             "shilton": "Shilton",
@@ -921,7 +907,6 @@ if __name__ == "__main__":
             "shilton": "Shilton",
             "vellanky": "Vellanki",
         },
-        drop_target_fns=("sinc1d", "sinc2d", "sinc3d", "sinc4d"),
     )
 
     ###############################################################################
@@ -956,6 +941,7 @@ if __name__ == "__main__":
         save_dir=f"{PLOTS_DIR}/f_visualizations",
         methods={
             "ours_no_natural_grad": "Learned Activation",
+            "ours_adaptive_no_natural_grad": "Learned Activation (adaptive rho)",
             # "kundu": "kundu",
             # "vien": "Vien",
             # "shilton": "Shilton",
@@ -986,6 +972,7 @@ if __name__ == "__main__":
         save_dir=f"{PLOTS_DIR}/f_visualizations",
         methods={
             "ours_no_natural_grad": "Learned Path",
+            "ours_adaptive_no_natural_grad": "Learned Path (adaptive rho)",
             # "kundu": "kundu",
             # "vien": "Vien",
             # "shilton": "Shilton",
@@ -1000,3 +987,7 @@ if __name__ == "__main__":
         save_dir=f"{PLOTS_DIR}/convergence",
         n_points=[2**i for i in range(17)],  # 1 ... 65536
     )
+
+
+if __name__ == "__main__":
+    main()

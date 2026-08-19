@@ -16,19 +16,30 @@ MAIN_METHODS = ["vien", "shilton", "vellanky", "kundu", "ours_no_natural_grad"]
 
 
 def filter_best_lengthscale(df: pd.DataFrame) -> pd.DataFrame:
+    medians = df.groupby(LABELS, observed=True)["best_y"].median().reset_index()
+
     # best lengthscale per target_fn across the (method, profile) of the main variants
-    best_lengthscale = (
-        df[df["method"].isin(MAIN_METHODS)]
-        .groupby(["target_fn", "method", "profile", "lengthscale"], observed=True)[
-            "best_y"
-        ]
-        .median()
-        .reset_index()
-        .loc[lambda d: d.groupby("target_fn", observed=True)["best_y"].idxmin()][
-            ["target_fn", "lengthscale"]
-        ]
+    main = medians[medians["method"].isin(MAIN_METHODS)]
+    best_lengthscale = main.loc[
+        main.groupby("target_fn", observed=True)["best_y"].idxmin()
+    ][["target_fn", "lengthscale"]]
+    kept = df.merge(best_lengthscale, on=["target_fn", "lengthscale"])
+
+    # methods that never ran at that lengthscale keep their own best instead of dropping out
+    missing = medians.merge(
+        kept[["target_fn", "method"]].drop_duplicates(),
+        on=["target_fn", "method"],
+        how="left",
+        indicator=True,
+    ).query("_merge == 'left_only'")
+    fallback = missing.loc[
+        missing.groupby(["target_fn", "method"], observed=True)["best_y"].idxmin()
+    ][["target_fn", "method", "lengthscale"]]
+
+    return pd.concat(
+        [kept, df.merge(fallback, on=["target_fn", "method", "lengthscale"])],
+        ignore_index=True,
     )
-    return df.merge(best_lengthscale, on=["target_fn", "lengthscale"])
 
 
 def filter_best_profile(df: pd.DataFrame) -> pd.DataFrame:
@@ -48,7 +59,7 @@ def config_path(target_fn, method, profile, lengthscale):
     return f"{RESULTS_DIR}/{target_fn}/{method}/{profile}_lengthscale_{lengthscale}/"
 
 
-def read_dir(target_fn, method, profile, lengthscale):
+def read_dir(target_fn, method, profile, lengthscale, acquisitions=110):
     def read_file(f):
         seed = int(f.split("_")[1].split(".")[0])
         # incomplete/corrupted files (job killed mid-write) are skipped
@@ -57,6 +68,13 @@ def read_dir(target_fn, method, profile, lengthscale):
             y = np.minimum.accumulate(r["observation_values"])
         except (EOFError, OSError, ValueError, KeyError) as e:
             print(f"Warning: skipping {os.path.join(path, f)} ({e})")
+            return None
+
+        # a run of the wrong length would make the per-acquisition curves ragged
+        if len(y) != acquisitions:
+            print(
+                f"Warning: {os.path.join(path, f)} has {len(y)} observations, dropping"
+            )
             return None
 
         # dict with summary statistics
@@ -161,7 +179,7 @@ def merge_previous(
     )
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-u",
@@ -247,3 +265,7 @@ if __name__ == "__main__":
         on=["target_fn", "method", "profile", "lengthscale"],
     )
     ys_df.to_parquet(f"{RESULTS_DIR}/ys_filtered.parquet")
+
+
+if __name__ == "__main__":
+    main()
