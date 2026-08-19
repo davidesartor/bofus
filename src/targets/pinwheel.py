@@ -1,19 +1,140 @@
-from typing import Protocol, Callable
+from typing import Callable, NamedTuple
+from functools import partial
 from jaxtyping import Float, Array, Scalar
 
 import jax
 import jax.numpy as jnp
-import scipy as sp
 import numpy as np
 
-
-class TestFunction(Protocol):
-    d: int
-
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
+from targets import TestFunction
 
 
-class PinWheel(TestFunction):
+class Params(NamedTuple):
+    """Everything the dynamics needs, as arrays, so the rollout jits once per run."""
+
+    L1: Scalar
+    L2: Scalar
+    m1: Scalar
+    m2: Scalar
+    Lp: Scalar
+    mp: Scalar
+    dp: Scalar
+    pivot: Float[Array, "2"]
+    dr: Scalar
+    kc: Scalar
+    dc: Scalar
+    cr: Scalar
+
+
+def dynamics(
+    x: Float[Array, "6"],
+    refs: Float[Array, "4"],  # q1_ref, q2_ref, K1, K2 at this instant
+    p: Params,
+) -> Float[Array, "6"]:
+    q1, q2, th, dq1, dq2, dth = x
+    q1_ref, q2_ref, K1t, K2t = refs
+
+    # ── unit vectors ──────────────────────────────────────────────
+    a12 = q1 + q2
+
+    u1 = jnp.array([jnp.cos(q1), jnp.sin(q1)])
+    u12 = jnp.array([jnp.cos(a12), jnp.sin(a12)])
+    up = jnp.array([jnp.cos(th), jnp.sin(th)])
+    u1p = jnp.array([-jnp.sin(q1), jnp.cos(q1)])  # perp link 1
+    u12p = jnp.array([-jnp.sin(a12), jnp.cos(a12)])  # perp link 2
+    upp = jnp.array([-jnp.sin(th), jnp.cos(th)])  # perp pinwheel
+
+    # ── positions ─────────────────────────────────────────────────
+    P1 = p.L1 * u1
+    Q = p.pivot
+
+    # ── robot dynamics ────────────────────────────────────────────
+    # the angle between the links is q2, so u1 @ u12 and u1 x u12 are just its cos/sin
+    c2, s2 = jnp.cos(q2), jnp.sin(q2)
+
+    M11 = (p.m1 / 3 + p.m2) * p.L1**2 + p.m2 * (p.L2**2 / 3 + p.L1 * p.L2 * c2)
+    M12 = p.m2 * (p.L2**2 / 3 + p.L1 * p.L2 * c2 / 2)
+    M22 = p.m2 * p.L2**2 / 3
+
+    h = p.m2 * p.L1 * p.L2 * s2 / 2
+    Cdq = jnp.array([-h * dq2 * dq1 - h * (dq1 + dq2) * dq2, h * dq1**2])
+
+    tau = jnp.array(
+        [
+            K1t * ((q1_ref - q1) - p.dr * dq1),
+            K2t * ((q2_ref - q2) - p.dr * dq2),
+        ]
+    )
+
+    # ── closest point on link 2 to pinwheel ───────────────────────
+    d = Q - P1
+    cu = (d @ u12) / p.L2
+    cup = (d @ up) / p.Lp
+    cosa = u12 @ up
+    sin2 = 1.0 - cosa**2
+
+    t2 = jnp.clip(jnp.where(sin2 > 1e-10, (cu - cup * cosa) / sin2, 0.0), 0.0, 1.0)
+    s = jnp.clip((t2 * p.L2 * cosa / p.Lp) - cup, 0.0, 1.0)
+    t2 = jnp.clip((d @ u12 + s * p.Lp * cosa) / p.L2, 0.0, 1.0)
+
+    ptL = P1 + t2 * p.L2 * u12
+    ptP = Q + s * p.Lp * up
+    gap = ptL - ptP
+    dist = jnp.linalg.norm(gap)
+
+    # ── contact force on link 2 ───────────────────────────────────
+    n = gap / jnp.maximum(dist, 1e-12)
+    pen = p.cr - dist
+    Jv1 = p.L1 * u1p + t2 * p.L2 * u12p  # d(ptL)/d(dq1)
+    Jv2 = t2 * p.L2 * u12p  # d(ptL)/d(dq2)
+    v_link = Jv1 * dq1 + Jv2 * dq2
+    v_pw = s * p.Lp * upp * dth
+    vn = (v_link - v_pw) @ n
+
+    F_mag = jnp.maximum(0.0, p.kc * pen - p.dc * vn)
+    F = jnp.where((dist > 1e-10) & (dist < p.cr), F_mag * n, jnp.zeros(2))
+
+    tau_arm = jnp.array([Jv1 @ F, Jv2 @ F])
+    tau_pw = -(s * p.Lp * upp) @ F
+
+    # ── equations of motion ───────────────────────────────────────
+    Ip = p.mp * p.Lp**2 / 3
+    # 2x2 inverse in closed form, an LU factorization per RK4 stage is not worth it
+    b = tau + tau_arm - Cdq
+    det = M11 * M22 - M12**2
+    ddq = jnp.array([M22 * b[0] - M12 * b[1], M11 * b[1] - M12 * b[0]]) / det
+    ddth = tau_pw / Ip - p.dp * dth
+
+    return jnp.array([dq1, dq2, dth, ddq[0], ddq[1], ddth])
+
+
+@jax.jit
+def rollout(
+    x0: Float[Array, "6"],
+    refs: Float[Array, "2n+1 4"],  # sampled on the half-step grid RK4 asks for
+    dt: Scalar,
+    p: Params,
+) -> Float[Array, "n+1 6"]:
+    """Fixed-step RK4 over the whole horizon in one dispatch.
+
+    The reference signals arrive pre-sampled, so nothing in here depends on the
+    candidate function and the trace is reused across candidates and basis sizes.
+    """
+
+    def step(x, ref_triple):
+        ref_a, ref_b, ref_c = ref_triple
+        k1 = dynamics(x, ref_a, p)
+        k2 = dynamics(x + dt / 2 * k1, ref_b, p)
+        k3 = dynamics(x + dt / 2 * k2, ref_b, p)
+        k4 = dynamics(x + dt * k3, ref_c, p)
+        x = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        return x, x
+
+    _, xs = jax.lax.scan(step, x0, (refs[0:-2:2], refs[1:-1:2], refs[2::2]))
+    return jnp.concatenate([x0[None], xs])
+
+
+class PinWheel:
     d: int = 1
     """
     2-link impedance-controlled arm interacting with a pinwheel.
@@ -40,6 +161,9 @@ class PinWheel(TestFunction):
         Effective radius for contact between arm and pinwheel [m]. Default 0.005.
     simulation_time : float
         Total simulation time [s]. Default 5.0.
+    dt : float
+        Integrator step [s]. Must stay well under the contact timescale
+        sqrt(m / contact_penalty_stiffness). Default 1e-4.
     """
 
     def __init__(
@@ -56,6 +180,7 @@ class PinWheel(TestFunction):
         contact_radius: float = 0.005,
         simulation_time: float = 3.0,
         target_angle: float = 0.0,
+        dt: float = 2e-4,
     ):
         self.L1, self.L2 = robot_arm_lengths
         self.m1, self.m2 = robot_arm_masses
@@ -69,15 +194,33 @@ class PinWheel(TestFunction):
         self.cr = contact_radius
         self.simulation_time = simulation_time
         self.target_angle = target_angle
+        self.dt = dt
+        self.n_steps = round(simulation_time / dt)
+
+    @property
+    def params(self) -> Params:
+        return Params(
+            L1=jnp.asarray(self.L1, float),
+            L2=jnp.asarray(self.L2, float),
+            m1=jnp.asarray(self.m1, float),
+            m2=jnp.asarray(self.m2, float),
+            Lp=jnp.asarray(self.Lp, float),
+            mp=jnp.asarray(self.mp, float),
+            dp=jnp.asarray(self.dp, float),
+            pivot=self.pivot,
+            dr=jnp.asarray(self.dr, float),
+            kc=jnp.asarray(self.kc, float),
+            dc=jnp.asarray(self.dc, float),
+            cr=jnp.asarray(self.cr, float),
+        )
 
     def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar:
         q1 = lambda t: f(jnp.array([t / self.simulation_time]))
-        try:
-            sol, theta_final, omega_final = self.simulate(q1_ref=q1)
-            return 2 * (1 - jnp.cos(theta_final - self.target_angle))
-        except Exception as e:
-            print(f"Simulation failed: {e}")
-            return jnp.array(4.0)  # worst case cost if simulation fails
+        _, xs = self.simulate(q1_ref=q1)
+        theta_final = xs[-1, 2]
+        cost = 2 * (1 - jnp.cos(theta_final - self.target_angle))
+        # a diverged rollout scores the worst case rather than poisoning the surrogate
+        return jnp.where(jnp.isnan(cost), 4.0, cost)
 
     def simulate(
         self,
@@ -85,98 +228,22 @@ class PinWheel(TestFunction):
         K2=lambda t: 20.0,  # stiffness for joint 2
         q1_ref=lambda t: 0.0,  # reference trajectory for joint 1
         q2_ref=lambda t: 0.0,  # reference trajectory for joint 2
-    ):
-        def dynamics(t, x):
-            q1, q2, th, dq1, dq2, dth = x
-
-            # ── unit vectors ──────────────────────────────────────────────
-            a12 = q1 + q2
-
-            u1 = jnp.array([jnp.cos(q1), jnp.sin(q1)])
-            u12 = jnp.array([jnp.cos(a12), jnp.sin(a12)])
-            up = jnp.array([jnp.cos(th), jnp.sin(th)])
-            u1p = jnp.array([-jnp.sin(q1), jnp.cos(q1)])  # perp link 1
-            u12p = jnp.array([-jnp.sin(a12), jnp.cos(a12)])  # perp link 2
-            upp = jnp.array([-jnp.sin(th), jnp.cos(th)])  # perp pinwheel
-
-            # ── positions ─────────────────────────────────────────────────
-            P1 = self.L1 * u1
-            Q = self.pivot
-
-            # ── robot dynamics ────────────────────────────────────────────
-            c2 = u1 @ u12
-            s2 = jnp.cross(u1, u12)
-
-            M11 = (self.m1 / 3 + self.m2) * self.L1**2 + self.m2 * (
-                self.L2**2 / 3 + self.L1 * self.L2 * c2
-            )
-            M12 = self.m2 * (self.L2**2 / 3 + self.L1 * self.L2 * c2 / 2)
-            M22 = self.m2 * self.L2**2 / 3
-            M = jnp.array([[M11, M12], [M12, M22]])
-
-            h = self.m2 * self.L1 * self.L2 * s2 / 2
-            C = jnp.array([[-h * dq2, -h * (dq1 + dq2)], [h * dq1, 0.0]])
-
-            K1t, K2t = K1(t), K2(t)
-            tau = jnp.array(
-                [
-                    K1t * ((q1_ref(t) - q1) - self.dr * dq1),
-                    K2t * ((q2_ref(t) - q2) - self.dr * dq2),
-                ]
-            )
-
-            # ── closest point on link 2 to pinwheel ───────────────────────
-            d = Q - P1
-            cu = (d @ u12) / self.L2
-            cup = (d @ up) / self.Lp
-            cosa = u12 @ up
-            sin2 = 1.0 - cosa**2
-
-            t2 = jnp.clip(
-                jnp.where(sin2 > 1e-10, (cu - cup * cosa) / sin2, 0.0), 0.0, 1.0
-            )
-            s = jnp.clip((t2 * self.L2 * cosa / self.Lp) - cup, 0.0, 1.0)
-            t2 = jnp.clip((d @ u12 + s * self.Lp * cosa) / self.L2, 0.0, 1.0)
-
-            ptL = P1 + t2 * self.L2 * u12
-            ptP = Q + s * self.Lp * up
-            gap = ptL - ptP
-            dist = jnp.linalg.norm(gap)
-
-            # ── contact force on link 2 ───────────────────────────────────
-            n = gap / jnp.maximum(dist, 1e-12)
-            pen = self.cr - dist
-            Jv1 = self.L1 * u1p + t2 * self.L2 * u12p  # d(ptL)/d(dq1)
-            Jv2 = t2 * self.L2 * u12p  # d(ptL)/d(dq2)
-            v_link = Jv1 * dq1 + Jv2 * dq2
-            v_pw = s * self.Lp * upp * dth
-            vn = (v_link - v_pw) @ n
-
-            F_mag = jnp.maximum(0.0, self.kc * pen - self.dc * vn)
-            F = jnp.where((dist > 1e-10) & (dist < self.cr), F_mag * n, jnp.zeros(2))
-
-            tau_arm = jnp.array([Jv1 @ F, Jv2 @ F])
-            tau_pw = -(s * self.Lp * upp) @ F
-
-            # ── equations of motion ───────────────────────────────────────
-            Ip = self.mp * self.Lp**2 / 3
-            ddq = jnp.linalg.solve(M, tau + tau_arm - C @ jnp.array([dq1, dq2]))
-            ddth = tau_pw / Ip - self.dp * dth
-
-            return jnp.array([dq1, dq2, dth, ddq[0], ddq[1], ddth])
+    ) -> tuple[Float[Array, "n+1"], Float[Array, "n+1 6"]]:
+        # the references are the only candidate-dependent part, so sample them
+        # once on the half-step grid instead of calling back per RK4 stage
+        ts_half = jnp.arange(2 * self.n_steps + 1) * (self.dt / 2)
+        refs = jnp.stack(
+            [
+                jnp.broadcast_to(jnp.squeeze(jax.vmap(ref)(ts_half)), ts_half.shape)
+                for ref in (q1_ref, q2_ref, K1, K2)
+            ],
+            axis=-1,
+        )
 
         # Initial state: arm at reference, pinwheel at pi with zero velocity
-        sol = sp.integrate.solve_ivp(
-            fun=jax.jit(dynamics),
-            t_span=[0, self.simulation_time],
-            y0=[q1_ref(0), q2_ref(0), jnp.pi, 0.0, 0.0, 0.0],
-            method="Radau",
-            rtol=1e-4,
-            atol=1e-4,
-            max_step=5e-3,
-        )
-        _, _, theta_final, _, _, omega_final = sol.y[:, -1]
-        return sol, theta_final, omega_final
+        x0 = jnp.array([refs[0, 0], refs[0, 1], jnp.pi, 0.0, 0.0, 0.0])
+        xs = rollout(x0, refs, jnp.asarray(self.dt, float), self.params)
+        return jnp.arange(self.n_steps + 1) * self.dt, xs
 
     def animate(
         self, f: Callable[[Float[Array, "d"]], Scalar], filename="pinwheel.gif", fps=30
@@ -185,10 +252,10 @@ class PinWheel(TestFunction):
         from matplotlib.animation import FuncAnimation
 
         q1_ref = lambda t: f(jnp.array([t / self.simulation_time]))
-        sol, _, _ = self.simulate(q1_ref=q1_ref)
+        t, xs = self.simulate(q1_ref=q1_ref)
 
-        t = sol.t
-        q1, q2, th = sol.y[0], sol.y[1], sol.y[2]
+        t = np.asarray(t)
+        q1, q2, th = np.asarray(xs[:, 0]), np.asarray(xs[:, 1]), np.asarray(xs[:, 2])
 
         t_anim = np.arange(t[0], t[-1], 1 / fps)
         q1 = np.interp(t_anim, t, q1)

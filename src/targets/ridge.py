@@ -1,27 +1,16 @@
-from typing import Protocol, Callable
+from typing import Callable
 from jaxtyping import Float, Array, Scalar
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
+import vlse.functions.base as vlse_base
 
 from bofus import kernels, rkhs
+from targets import TestFunction
 
-
-class Profile(Protocol):
-    """A scalar test function on the unit hypercube, e.g. any vlse function with normalized=True."""
-
-    d: int
-
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]: ...
-
-
-class TestFunction(Protocol):
-    d: int  # dimension of the input space
-    m: int = 1  # number of outputs
-
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
+Profile = vlse_base.TestFunction
 
 
 def faddeeva(z: Array, n_terms: int = 16) -> Array:
@@ -56,7 +45,7 @@ def quadrature_value(
     return profile(jax.nn.sigmoid(g))
 
 
-class Ridge(TestFunction):
+class Ridge:
     """Profile composed with d = profile.d random linear functionals g_i = b_i + int w_i f.
 
     The weights w_i are trig polynomials of degree <= max_frequency, normalized in closed

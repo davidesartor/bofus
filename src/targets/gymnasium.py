@@ -1,17 +1,13 @@
-from typing import Protocol, Callable
+from typing import Callable
 from jaxtyping import Float, Int, Array, Scalar
 
 import jax.numpy as jnp
 import gymnasium as gym
 
-
-class TestFunction(Protocol):
-    d: int
-
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
+from targets import TestFunction
 
 
-class Pendulum(TestFunction):
+class Pendulum:
     d: int = 2
 
     def __init__(

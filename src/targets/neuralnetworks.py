@@ -1,4 +1,4 @@
-from typing import Protocol, Callable
+from typing import Callable
 from jaxtyping import Float, Int, Array, Scalar, Key
 
 import jax
@@ -9,11 +9,7 @@ import optax
 from optax.losses import softmax_cross_entropy_with_integer_labels as cross_entropy
 import torchvision
 
-
-class TestFunction(Protocol):
-    d: int
-
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
+from targets import TestFunction
 
 
 class ResidualActivation(eqx.Module):
@@ -25,7 +21,7 @@ class ResidualActivation(eqx.Module):
         return self.f((x[None] + 1.0) / 2.0) + jax.nn.relu(x)
 
 
-class MNIST(TestFunction):
+class MNIST:
     d: int = 1
 
     def __init__(
