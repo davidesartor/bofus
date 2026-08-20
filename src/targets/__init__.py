@@ -11,7 +11,7 @@ class TestFunction(Protocol):
     def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
 
 
-from .ridge import Ridge, quadrature_value, faddeeva
+from .ridge import Ridge
 from .gymnasium import Pendulum
 from .pinwheel import PinWheel
 from .neuralnetworks import MNIST

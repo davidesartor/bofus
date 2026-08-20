@@ -215,7 +215,7 @@ class PinWheel:
         )
 
     def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar:
-        q1 = lambda t: f(jnp.array([t / self.simulation_time]))
+        q1 = lambda t: f(jnp.array([t / self.simulation_time])).squeeze()
         _, xs = self.simulate(q1_ref=q1)
         theta_final = xs[-1, 2]
         cost = 2 * (1 - jnp.cos(theta_final - self.target_angle))

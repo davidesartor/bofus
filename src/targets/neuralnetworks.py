@@ -18,7 +18,7 @@ class ResidualActivation(eqx.Module):
     f: Callable
 
     def __call__(self, x: Scalar) -> Scalar:
-        return self.f((x[None] + 1.0) / 2.0) + jax.nn.relu(x)
+        return self.f((x[None] + 1.0) / 2.0).squeeze() + jax.nn.relu(x)
 
 
 class MNIST:

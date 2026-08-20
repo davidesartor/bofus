@@ -8,43 +8,11 @@ import equinox as eqx
 import vlse.functions.base as vlse_base
 
 from bofus import kernels, rkhs
-from targets import TestFunction
 
 Profile = vlse_base.TestFunction
 
 
-def faddeeva(z: Array, n_terms: int = 16) -> Array:
-    """Scaled complex error function w(z) = exp(-z^2) erfc(-i z), for Im(z) >= 0.
-
-    Weideman's rational approximation, accurate to float32 roundoff.
-    """
-    m = 2 * n_terms
-    scale = jnp.sqrt(n_terms / jnp.sqrt(2.0))
-    nodes = scale * jnp.tan(jnp.arange(-m + 1, m) * jnp.pi / (2 * m))
-    weights = jnp.concatenate(
-        [jnp.zeros(1), jnp.exp(-jnp.square(nodes)) * (scale**2 + jnp.square(nodes))]
-    )
-    coefficients = jnp.real(jnp.fft.fft(jnp.fft.fftshift(weights)))[1 : n_terms + 1]
-
-    denominator = scale - 1j * z
-    unit_disk = (scale + 1j * z) / denominator
-    polynomial = jnp.polyval(jnp.flip(coefficients).astype(z.dtype), unit_disk)
-    return polynomial / (m * denominator**2) + (1 / jnp.sqrt(jnp.pi)) / denominator
-
-
 @eqx.filter_jit
-def quadrature_value(
-    profile: Profile,
-    x: Float[Array, "n d"],
-    w: Float[Array, "d n"],
-    b: Float[Array, "d"],
-    f: Callable[[Float[Array, "d"]], Scalar],
-) -> Scalar:
-    """Profile of the quadrature estimates of g_i = b_i + int w_i f, squashed to [0, 1]."""
-    g = b + jnp.mean(w * jax.vmap(f)(x), axis=-1)
-    return profile(jax.nn.sigmoid(g))
-
-
 class Ridge:
     """Profile composed with d = profile.d random linear functionals g_i = b_i + int w_i f.
 
@@ -108,57 +76,8 @@ class Ridge:
             jnp.cos(2 * jnp.pi * self.modes @ x.T + self.phi[..., None]),
         )
 
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar:
-        if self.has_exact_value(f):
-            return self.exact_value(f)
-        return quadrature_value(self.profile, self.x, self.w, self.b, f)
-
-    @staticmethod
-    def has_exact_value(f: Callable[[Float[Array, "d"]], Scalar]) -> bool:
-        """Whether f is an RKHS function of the one form the closed form covers."""
-        return (
-            isinstance(f, rkhs.Function)
-            and isinstance(f.kernel.profile, kernels.SquaredExponential)
-            and isinstance(f.kernel.metric, kernels.Euclidean)
-            and f.kernel.m == 1
-        )
-
     @eqx.filter_jit
-    def exact_value(self, f: rkhs.Function) -> Scalar:
-        """Reference value with the integrals in closed form. Not a black box functional.
-
-        Only valid for a squared exponential profile on a Euclidean metric, where the
-        kernel factorizes over dimensions and every int_0^1 exp(i w t) k(t, x_l) dt is a
-        difference of complex error functions. Reads f's basis points and coefficients,
-        so it is a baseline for the quadratures above, never a target to optimize.
-        """
-        assert isinstance(f.kernel.profile, kernels.SquaredExponential)
-        assert isinstance(f.kernel.metric, kernels.Euclidean)
-        rho, omega = f.kernel.rho, 2 * jnp.pi * self.modes
-
-        # per dimension int_0^1 exp(i w t) exp(-(t - mu)^2 / (2 rho^2)) dt
-        mu = f.x[:, None, :]  # (basis points, modes, d)
-        bounds = jnp.stack(
-            [(0 - mu) / (rho * jnp.sqrt(2)), (1 - mu) / (rho * jnp.sqrt(2))]
-        )
-        gaussian_transform = (
-            rho
-            * jnp.sqrt(jnp.pi / 2)
-            * jnp.exp(1j * omega * mu)
-            * jnp.diff(self.scaled_erf(bounds, omega * rho), axis=0).squeeze(0)
-        )
-
-        # pair the mode coefficients of w_i with those of f, then take the real part
-        mode_integral = jnp.prod(gaussian_transform, axis=-1)  # (basis points, modes)
-        phase = jnp.exp(1j * self.phi)  # (d, modes)
-        a = f.a.reshape(len(f.x))
-        g = self.b + jnp.real(self.c * phase * (a @ mode_integral)).sum(-1)
+    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar:
+        """Profile of the quadrature estimates of g_i = b_i + int w_i f, squashed to [0, 1]."""
+        g = self.b + jnp.mean(self.w * jax.vmap(f)(self.x).squeeze(-1), axis=-1)
         return self.profile(jax.nn.sigmoid(g))
-
-    @staticmethod
-    def scaled_erf(u: Array, w: Array) -> Array:
-        """exp(-w^2 / 2) erf(u - i w / sqrt(2)), written so nothing over- or underflows."""
-        sign, v = jnp.where(u < 0, -1.0, 1.0), jnp.abs(u)
-        wofz = faddeeva(sign * w / jnp.sqrt(2) + 1j * v)
-        exponential = jnp.exp(-jnp.square(v) + 1j * sign * jnp.sqrt(2) * v * w)
-        return sign * (jnp.exp(-jnp.square(w) / 2) - wofz * exponential)
