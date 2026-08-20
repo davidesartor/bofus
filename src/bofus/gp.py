@@ -1,6 +1,7 @@
-from typing import NamedTuple, Self
-from jaxtyping import Array, Float, Scalar
+from typing import NamedTuple, Optional, Self
+from jaxtyping import Array, Float, Int, Bool, Scalar
 from functools import partial
+import math
 import warnings
 
 import jax
@@ -97,10 +98,12 @@ def gp_posterior(
 def loglikelihood(
     Koo: Float[Array, "n n"],
     ys: Float[Array, "n"],
-    mask: Float[Array, "n"] | None = None,
+    mask: Bool[Array, "n"] | None = None,
 ) -> tuple[Scalar, Scalar, Scalar]:
-    # a zero mask drops padded observations, so n can stay constant as data accumulates
-    mask = jnp.ones_like(ys) if mask is None else mask
+    # mask out observations, to keep shapes constant
+    if mask is None:
+        mask = jnp.ones_like(ys, dtype=bool)
+    ys = ys * mask
     n = mask.sum()
 
     # cholesky of K and compute logdet
@@ -115,7 +118,7 @@ def loglikelihood(
 
     # compute optimal trend b and scale nu
     b = (Ki_1 * ys).sum() / Ki_1.sum()
-    nu = jnp.dot((ys - b) * mask / n, (Ki_y - Ki_1 * b))
+    nu = jnp.dot((ys - b) * mask, (Ki_y - Ki_1 * b)) / n
 
     # likelihood when marginalizing over trend and variance
     loglik = -0.5 * (n * jnp.log(nu) + logdetK)
@@ -124,38 +127,35 @@ def loglikelihood(
 
 @eqx.filter_jit
 def masked_kernel_matrix(
-    metric: kernels.Metric,
     profile: kernels.Profile,
     rho: Float[Array, "D"],
     xs: Float[Array, "N D"],
     g: Scalar,
-    mask: Float[Array, "N"],
+    mask: Bool[Array, "N"],
 ) -> Float[Array, "N N"]:
     """Observation covariance with padded entries replaced by an inert identity block."""
-    Koo = profile(metric(rho, xs, xs)) * mask[:, None] * mask[None, :]
+    Koo = profile(kernels.sq_euclidean(rho, xs)) * mask[:, None] * mask[None, :]
     return Koo + jnp.diag(g * mask + (1 - mask))
 
 
 @eqx.filter_jit
 @partial(jax.value_and_grad, argnums=0)
 def vector_mle_loss(
-    params: Float[Array, "D+1"],
-    metric: kernels.Metric,
+    log_params: Float[Array, "D+1"],
     profile: kernels.Profile,
     xs: Float[Array, "N D"],
     ys: Float[Array, "N"],
     mask: Float[Array, "N"],
 ) -> Scalar:
-    """Negative marginal likelihood of the lengthscales and nugget, at a fixed padded size."""
-    rho, g = params[:-1], params[-1]
-    Koo = masked_kernel_matrix(metric, profile, rho, xs, g, mask)
+    """Negative marginal likelihood of the log lengthscales and log nugget, at a fixed padded size."""
+    rho, g = jnp.exp(log_params[:-1]), jnp.exp(log_params[-1])
+    Koo = masked_kernel_matrix(profile, rho, xs, g, mask)
     return -loglikelihood(Koo, ys, mask)[0]
 
 
 class GaussianProcess(Module):
     # kernel definition
-    metric: kernels.Metric = kernels.Euclidean()
-    profile: kernels.Profile = kernels.SquaredExponential()
+    profile: kernels.Profile = kernels.squared_exponential
 
     # model parameters
     rho: Float[Array, "d"] = eqx.field(default=None)
@@ -179,9 +179,9 @@ class GaussianProcess(Module):
         self,
         rho: Float[Array, "d"],
         xs1: Float[Array, "m d"],
-        xs2: Float[Array, "n d"],
+        xs2: Optional[Float[Array, "n d"]] = None,
     ) -> Float[Array, "m n"]:
-        return self.profile(self.metric(rho, xs1, xs2))
+        return self.profile(kernels.sq_euclidean(rho, xs1, xs2))
 
     @eqx.filter_jit
     def predict(self, xs: Float[Array, "m d"]) -> Gaussian:
@@ -190,7 +190,7 @@ class GaussianProcess(Module):
         xs = jnp.zeros((len(xs), D)).at[:, : xs.shape[-1]].set(xs)
 
         # compute covariance matrices
-        Kxx = self.nu * self.kernel(self.rho, xs, xs)
+        Kxx = self.nu * self.kernel(self.rho, xs)
         Kox = self.nu * self.kernel(self.rho, self.observed_xs, xs)
 
         # padded observations are not inert in the kernel, so mask them out
@@ -226,12 +226,12 @@ class GaussianProcess(Module):
         mask = jnp.zeros(N).at[:n].set(1.0)
         padded_ys = jnp.zeros(N).at[:n].set(ys)
 
-        def verbose_loss(params: Float[Array, "D+1"]):
+        def verbose_loss(log_params: Float[Array, "D+1"]):
             val, grad = vector_mle_loss(
-                params, self.metric, self.profile, padded_xs, padded_ys, mask
+                log_params, self.profile, padded_xs, padded_ys, mask
             )
             if jnp.isnan(val) or jnp.isnan(grad).any():
-                warnings.warn(f"NaN detected in loss or gradient: {params}")
+                warnings.warn(f"NaN detected in loss or gradient: {log_params}")
             return val, grad
 
         # bounds are estimated on the unit cube, then stretched back to each input span
@@ -240,7 +240,7 @@ class GaussianProcess(Module):
         rescaled_xs = (xs - xs.min(0)) / spans[:d]
         auto_range = (
             auto_lengthscale_range(
-                self.profile, kernels.Euclidean()(1.0, rescaled_xs, rescaled_xs)
+                self.profile, kernels.sq_euclidean(1.0, rescaled_xs)
             )
             if lengthscale_range is None
             else None
@@ -264,22 +264,24 @@ class GaussianProcess(Module):
             [jnp.broadcast_to(lengthscale, (D,)), jnp.array([nugget])]
         )
 
-        # run optimization
+        # optimize in log space: positivity is free and a lengthscale is a scale, not an offset
+        log_bounds = [
+            *zip(jnp.log(lower).tolist(), jnp.log(upper).tolist()),
+            tuple(math.log(b) for b in nugget_range),
+        ]
         result = sp.optimize.minimize(
             fun=verbose_loss,
-            x0=init_params,
+            x0=jnp.log(init_params),
             jac=True,
             method="L-BFGS-B",
-            bounds=[*zip(lower.tolist(), upper.tolist()), nugget_range],
+            bounds=log_bounds,
             options=dict(maxiter=max_iterations, ftol=ftol, gtol=gtol),
         )
 
         # extract the optimal parameters and infer the rest, still at the padded size
-        rho = jnp.array(result.x[:-1])
-        g = jnp.array(result.x[-1])
-        padded_Koo = masked_kernel_matrix(
-            self.metric, self.profile, rho, padded_xs, g, mask
-        )
+        rho = jnp.exp(jnp.array(result.x[:-1]))
+        g = jnp.exp(jnp.array(result.x[-1]))
+        padded_Koo = masked_kernel_matrix(self.profile, rho, padded_xs, g, mask)
         llk, b, nu = loglikelihood(padded_Koo, padded_ys, mask)
 
         # an identity block keeps the padding out of the real block's factorization
@@ -309,46 +311,50 @@ class GaussianProcess(Module):
 class Basis(NamedTuple):
     """Basis points and coefficients of a batch of rkhs.Function, padded to a common size."""
 
-    kernel: rkhs.RKHS
-    x: Float[Array, "n k d"]
+    x: Float[Array, "n k m d"]
     a: Float[Array, "n k m"]
-    rho: Float[Array, "n d"] = None  # per-function lengthscales, for the ambient metric
+    rho: Float[Array, "n k d"]  # per-function, per-output lengthscales
 
     @classmethod
     def stack(
-        cls, fs: list[rkhs.Function], n: int | None = None, k: int | None = None
+        cls, fs: list[rkhs.Function], n: int | None = None, m: int | None = None
     ) -> Self:
-        """Stack functions, optionally padding to n functions of k basis points each."""
+        """Stack functions, optionally padding to n functions of m basis points per output."""
         # zero coefficients make the padding inert in every inner product
-        k = padded_to(max(len(f.x) for f in fs), k)
-        pad = lambda z: jnp.concat([z, jnp.zeros((k - len(z), *z.shape[1:]))])
+        m = padded_to(max(f.m for f in fs), m)
+        pad = lambda z: jnp.concat(
+            [z, jnp.zeros((len(z), m - z.shape[1], *z.shape[2:]))], axis=1
+        )
         x = jnp.stack([pad(f.x) for f in fs])
         a = jnp.stack([pad(f.a) for f in fs])
-        rho = jnp.stack([f.kernel.rho for f in fs])
+        rho = jnp.stack([f.rho for f in fs])
 
         # padding functions keep the shapes constant as observations accumulate
         if n is not None and n > len(fs):
             x = jnp.concat([x, jnp.zeros((n - len(fs), *x.shape[1:]))])
             a = jnp.concat([a, jnp.zeros((n - len(fs), *a.shape[1:]))])
             # unit padding lengthscales keep the ambient distances finite
-            rho = jnp.concat([rho, jnp.ones((n - len(fs), rho.shape[-1]))])
-        return cls(kernel=fs[0].kernel, x=x, a=a, rho=rho)
+            rho = jnp.concat([rho, jnp.ones((n - len(fs), *rho.shape[1:]))])
+        return cls(x=x, a=a, rho=rho)
 
 
 @eqx.filter_jit
 def rkhs_inner_products(basis1: Basis, basis2: Basis) -> Float[Array, "m n"]:
     """Pairwise RKHS inner products between two batches of functions."""
-    points = lambda b: rearrange(b.x, "n k d -> (n k) d")
-    weights = lambda b: rearrange(b.a, "n k m -> (n k) m")
+
+    # one kernel evaluation over an output's basis points, then sum within each function pair
+    def per_output(rho, x1, a1, x2, a2) -> Float[Array, "m n"]:
+        points = lambda x: rearrange(x, "n m d -> (n m) d")
+        weights = lambda a: rearrange(a, "n m -> (n m)")
+        weighted_kernel = weights(a1)[:, None] * weights(a2)[None, :]
+        weighted_kernel = weighted_kernel * rkhs.kernel(rho, points(x1), points(x2))
+        m1, m2 = a1.shape[-1], a2.shape[-1]
+        return reduce(weighted_kernel, "(m m1) (n m2) -> m n", "sum", m1=m1, m2=m2)
 
     # the outputs are independent, so their contributions just add up
-    weighted_kernel = weights(basis1) @ weights(basis2).T
-
-    # one kernel evaluation over all basis points, then sum within each function pair
-    weighted_kernel = weighted_kernel * basis1.kernel(points(basis1), points(basis2))
-    k1, k2 = basis1.a.shape[-2], basis2.a.shape[-2]
-    pattern = "(m k1) (n k2) -> m n"
-    return reduce(weighted_kernel, pattern, "sum", k1=k1, k2=k2)
+    # this path assumes a shared kernel, so any function's lengthscales are the kernel's
+    per_output = jax.vmap(per_output, in_axes=(0, 1, 1, 1, 1))
+    return per_output(basis1.rho[0], basis1.x, basis1.a, basis2.x, basis2.a).sum(0)
 
 
 @eqx.filter_jit
@@ -372,8 +378,8 @@ def ambient_inner_products(
     # the mixing scale differs per pair of lengthscales, so pairs cannot share
     # one flattened kernel evaluation the way rkhs_inner_products does
     def inner(rho1, x1, a1, rho2, x2, a2) -> Scalar:
-        f1 = rkhs.Function(basis1.kernel._replace(rho=rho1), x1, a1)
-        f2 = rkhs.Function(basis2.kernel._replace(rho=rho2), x2, a2)
+        f1 = rkhs.Function(rho1, x1, a1)
+        f2 = rkhs.Function(rho2, x2, a2)
         return rkhs.ambient_inner_product(ambient_rho, f1, f2)
 
     inner = jax.vmap(inner, in_axes=(None, None, None, 0, 0, 0))
@@ -395,11 +401,19 @@ def ambient_sq_distances(
     return jnp.maximum(d2, 0.0)
 
 
-def sq_distances(ambient: rkhs.RKHS | None, basis1: Basis, basis2: Basis):
-    """Squared distances between candidate batches, ambient when one is set."""
-    if ambient is None:
-        return rkhs_sq_distances(basis1, basis2)
-    return ambient_sq_distances(ambient.rho, basis1, basis2)
+def sq_distances(
+    ambient_rho: Float[Array, "d"] | None, basis1: Basis, basis2: Optional[Basis] = None
+):
+    """Squared distances between candidate batches, ambient when a lengthscale is set."""
+    self_block = basis2 is None
+    basis2 = basis1 if self_block else basis2
+    if ambient_rho is None:
+        d2 = rkhs_sq_distances(basis1, basis2)
+    else:
+        d2 = ambient_sq_distances(ambient_rho, basis1, basis2)
+
+    # cancellation only approximates the exact zeros a block has against itself
+    return jnp.fill_diagonal(d2, 0.0, inplace=False) if self_block else d2
 
 
 @eqx.filter_jit
@@ -418,14 +432,14 @@ def masked_covariance(
 @eqx.filter_jit
 @partial(jax.value_and_grad, argnums=0)
 def mle_loss(
-    params: Float[Array, "2"],
+    log_params: Float[Array, "2"],
     profile: kernels.Profile,
     d2: Float[Array, "N N"],
     ys: Float[Array, "N"],
     mask: Float[Array, "N"],
 ) -> Scalar:
-    """Negative marginal likelihood of the lengthscale and nugget, at a fixed padded size."""
-    rho, g = params[0], params[-1]
+    """Negative marginal likelihood of the log lengthscale and log nugget, at a fixed padded size."""
+    rho, g = jnp.exp(log_params[0]), jnp.exp(log_params[-1])
     Koo = masked_covariance(profile, d2, rho, g, mask)
     return -loglikelihood(Koo, ys, mask)[0]
 
@@ -448,14 +462,14 @@ class FunctionalPosterior(eqx.Module):
     Koo_lu: tuple
     Koo_inv_sum: Scalar
 
-    # reference space the candidates are compared in, None for the shared fixed kernel
-    ambient: rkhs.RKHS | None = None
+    # lengthscale of the reference space candidates are compared in, None for a shared kernel
+    ambient_rho: Float[Array, "d"] | None = None
 
     @eqx.filter_jit
     def predict(self, fs: list[rkhs.Function]) -> Gaussian:
         basis = Basis.stack(fs)
-        d2 = lambda b1, b2: sq_distances(self.ambient, b1, b2) / self.rho
-        Kxx = self.nu * self.profile(d2(basis, basis))
+        d2 = lambda b1, b2=None: sq_distances(self.ambient_rho, b1, b2) / self.rho
+        Kxx = self.nu * self.profile(d2(basis))
         Kox = self.nu * self.profile(d2(self.basis, basis))
 
         # padded observations are not inert in the kernel, so mask them out
@@ -473,10 +487,10 @@ class FunctionalPosterior(eqx.Module):
 
 class FunctionalGaussianProcess(Module):
     # kernel definition
-    profile: kernels.Profile = kernels.SquaredExponential()
+    profile: kernels.Profile = kernels.squared_exponential
 
-    # reference space the candidates are compared in, None for the shared fixed kernel
-    ambient: rkhs.RKHS = eqx.field(default=None)
+    # lengthscale of the reference space candidates are compared in, None for a shared kernel
+    ambient_rho: Float[Array, "d"] = eqx.field(default=None)
 
     # model parameters
     rho: Scalar = eqx.field(default=None)
@@ -497,7 +511,7 @@ class FunctionalGaussianProcess(Module):
 
     @eqx.filter_jit
     def metric(self, f1: rkhs.Function, f2: rkhs.Function) -> Scalar:
-        d = sq_distances(self.ambient, Basis.stack([f1]), Basis.stack([f2])) ** 0.5
+        d = sq_distances(self.ambient_rho, Basis.stack([f1]), Basis.stack([f2])) ** 0.5
         return d.squeeze()
 
     @eqx.filter_jit
@@ -509,7 +523,7 @@ class FunctionalGaussianProcess(Module):
     ) -> Float[Array, "m n"]:
         basis1 = fs1 if isinstance(fs1, Basis) else Basis.stack(fs1)
         basis2 = fs2 if isinstance(fs2, Basis) else Basis.stack(fs2)
-        return self.profile(sq_distances(self.ambient, basis1, basis2) / rho)
+        return self.profile(sq_distances(self.ambient_rho, basis1, basis2) / rho)
 
     def predict(self, fs: list[rkhs.Function]) -> Gaussian:
         return self.posterior.predict(fs)
@@ -525,18 +539,23 @@ class FunctionalGaussianProcess(Module):
         Assumes fs[:m] are the functions the cache was built from, in order.
         Distances do not depend on rho or g, so a cache stays valid across refits.
         """
-        m = 0 if cached is None else len(cached)
-        if m == 0 or m > len(fs):
-            return sq_distances(self.ambient, basis, basis)
+        n_cached = 0 if cached is None else len(cached)
+        if n_cached == 0 or n_cached > len(fs):
+            return sq_distances(self.ambient_rho, basis)
 
         N = len(basis.x)
-        d2 = jnp.zeros((N, N)).at[:m, :m].set(cached)
-        if len(fs) > m:
+        d2 = jnp.zeros((N, N)).at[:n_cached, :n_cached].set(cached)
+        if len(fs) > n_cached:
             # the new block is padded to its own stable size, so shapes stay logarithmic
-            new = Basis.stack(fs[m:], n=padded_to(len(fs) - m), k=basis.x.shape[1])
-            cross = sq_distances(self.ambient, basis, new)[:, : len(fs) - m]
-            d2 = d2.at[:, m : len(fs)].set(cross).at[m : len(fs), :].set(cross.T)
-        return d2
+            new = Basis.stack(
+                fs[n_cached:], n=padded_to(len(fs) - n_cached), m=basis.x.shape[2]
+            )
+            cross = sq_distances(self.ambient_rho, basis, new)[:, : len(fs) - n_cached]
+            d2 = d2.at[:, n_cached : len(fs)].set(cross)
+            d2 = d2.at[n_cached : len(fs), :].set(cross.T)
+
+        # the new block's self pairs sit off the cross diagonal, so they miss the exact zero
+        return jnp.fill_diagonal(d2, 0.0, inplace=False)
 
     def fit(
         self,
@@ -555,17 +574,17 @@ class FunctionalGaussianProcess(Module):
     ) -> Self:
         # pad to a stable size, so the mle loss retraces only when the padding grows
         n, N = len(ys), padded_to(len(ys), padded_size)
-        basis = Basis.stack(fs, n=N, k=padded_basis_size)
+        basis = Basis.stack(fs, n=N, m=padded_basis_size)
         mask = jnp.zeros(N).at[:n].set(1.0)
         padded_ys = jnp.zeros(N).at[:n].set(ys)
 
         # precalc the metric to speedup mle calls
         d2 = self.extend_sq_distances(basis, fs, cached_dists)
 
-        def verbose_loss(params: Float[Array, "2"]):
-            val, grad = mle_loss(params, self.profile, d2, padded_ys, mask)
+        def verbose_loss(log_params: Float[Array, "2"]):
+            val, grad = mle_loss(log_params, self.profile, d2, padded_ys, mask)
             if jnp.isnan(val) or jnp.isnan(grad).any():
-                warnings.warn(f"NaN detected in loss or gradient: {params}")
+                warnings.warn(f"NaN detected in loss or gradient: {log_params}")
             return val, grad
 
         # the padded functions sit at the origin, so only the real block carries distances
@@ -588,19 +607,23 @@ class FunctionalGaussianProcess(Module):
             lengthscale = self.rho if self.rho is not None else lengthscale
         init_params = jnp.array([lengthscale, nugget])
 
-        # run optimization
+        # optimize in log space: positivity is free and a lengthscale is a scale, not an offset
+        log_bounds = [
+            tuple(math.log(b) for b in lengthscale_range),
+            tuple(math.log(b) for b in nugget_range),
+        ]
         result = sp.optimize.minimize(
             fun=verbose_loss,
-            x0=init_params,
+            x0=jnp.log(init_params),
             jac=True,
             method="L-BFGS-B",
-            bounds=[lengthscale_range, nugget_range],
+            bounds=log_bounds,
             options=dict(maxiter=max_iterations, ftol=ftol, gtol=gtol),
         )
 
         # extract the optimal parameters and infer the rest, still at the padded size
-        rho = jnp.array(result.x[0])
-        g = jnp.array(result.x[-1])
+        rho = jnp.exp(jnp.array(result.x[0]))
+        g = jnp.exp(jnp.array(result.x[-1]))
         padded_Koo = masked_covariance(self.profile, d2, rho, g, mask)
         llk, b, nu = loglikelihood(padded_Koo, padded_ys, mask)
 
@@ -609,7 +632,7 @@ class FunctionalGaussianProcess(Module):
         scaled_Koo = scaled_Koo + jnp.diag(1 - mask)
         posterior = FunctionalPosterior(
             profile=self.profile,
-            ambient=self.ambient,
+            ambient_rho=self.ambient_rho,
             rho=rho,
             nu=nu,
             b=b,
