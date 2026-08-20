@@ -4,21 +4,17 @@ import numpy as np
 
 from bofus import gp, kernels, rkhs
 
-D, K = 1, 3
+D, M, K = 1, 3, 1
 
 
-def make_functions(n: int, k: int = K, d: int = D, seed: int = 0):
+def make_functions(n: int, m: int = M, d: int = D, k: int = K, seed: int = 0):
     rng = np.random.default_rng(seed)
-    kernel = rkhs.RKHS(
-        metric=kernels.Euclidean(),
-        profile=kernels.SquaredExponential(),
-        rho=jnp.full(d, 0.2),
-    )
+    rho = jnp.full((k, d), 0.2)
     fs = [
         rkhs.Function.from_xy(
-            kernel,
-            jnp.asarray(rng.random((k, d))),
-            jnp.asarray(rng.uniform(-1, 1, (k, 1))),
+            rho,
+            jnp.asarray(rng.random((k, m, d))),
+            jnp.asarray(rng.uniform(-1, 1, (k, m))),
         )
         for _ in range(n)
     ]
@@ -28,7 +24,7 @@ def make_functions(n: int, k: int = K, d: int = D, seed: int = 0):
 
 def test_extend_sq_distances_matches_full_recompute():
     """The cached-block extension used by warmstart fits must agree with a cold distance matrix."""
-    surrogate = gp.FunctionalGaussianProcess(profile=kernels.SquaredExponential())
+    surrogate = gp.FunctionalGaussianProcess(profile=kernels.squared_exponential)
     fs, _ = make_functions(12)
     basis = gp.Basis.stack(fs)
     full = gp.sq_distances(None, basis, basis)
@@ -44,17 +40,13 @@ def test_gp_posterior_cached_factors_match_fresh():
     n = 8
     xs = jnp.asarray(rng.random((n, 3)))
     ys = jnp.asarray(rng.standard_normal(n))
-    metric, profile, rho = (
-        kernels.Euclidean(),
-        kernels.SquaredExponential(),
-        jnp.full(3, 0.3),
-    )
-    Koo = profile(metric(rho, xs, xs)) + 1e-6 * jnp.eye(n)
+    profile, rho = kernels.squared_exponential, jnp.full(3, 0.3)
+    Koo = profile(kernels.sq_euclidean(rho, xs)) + 1e-6 * jnp.eye(n)
     _, b, nu = gp.loglikelihood(Koo, ys)
 
     candidate = jnp.asarray(rng.random((1, 3)))
-    Kxx = nu * profile(metric(rho, candidate, candidate))
-    Kox = nu * profile(metric(rho, xs, candidate))
+    Kxx = nu * profile(kernels.sq_euclidean(rho, candidate))
+    Kox = nu * profile(kernels.sq_euclidean(rho, xs, candidate))
     scaled_Koo = nu * Koo
 
     fresh = gp.gp_posterior(Kxx, Kox, scaled_Koo, ys, b)
@@ -76,7 +68,7 @@ def test_fit_stays_finite_on_duplicated_observations():
     fs = [unique_fs[i] for i in rng.integers(0, distinct, n)]
     ys = jnp.asarray(rng.standard_normal(n))
 
-    fitted = gp.FunctionalGaussianProcess(profile=kernels.SquaredExponential()).fit(
+    fitted = gp.FunctionalGaussianProcess(profile=kernels.squared_exponential).fit(
         fs, ys
     )
     marginal = fitted.predict(fs)
@@ -88,7 +80,7 @@ def test_fit_stays_finite_on_duplicated_observations():
 def test_fit_warmstart_extends_cold_fit_distances():
     """Fitting with a cached distance block from a subset of the data must match a cold fit."""
     fs, ys = make_functions(10, seed=3)
-    surrogate = gp.FunctionalGaussianProcess(profile=kernels.SquaredExponential())
+    surrogate = gp.FunctionalGaussianProcess(profile=kernels.squared_exponential)
 
     cold = surrogate.fit(fs, ys)
     previous = surrogate.fit(fs[:-1], ys[:-1])
