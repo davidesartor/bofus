@@ -1,0 +1,506 @@
+<title>{{TITLE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --candidate: #2a78d6;
+    --best: #eb6834;
+    --trail: rgba(42, 120, 214, 0.10);
+    --outside: rgba(11, 11, 11, 0.035);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --candidate: #3987e5;
+      --best: #d95926;
+      --trail: rgba(57, 135, 229, 0.12);
+      --outside: rgba(255, 255, 255, 0.045);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --plane: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --candidate: #3987e5;
+    --best: #d95926;
+    --trail: rgba(57, 135, 229, 0.12);
+    --outside: rgba(255, 255, 255, 0.045);
+  }
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    background: var(--plane);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  h1 { font-size: 22px; font-weight: 600; text-wrap: balance; }
+  .sub { color: var(--ink-2); font-size: 13.5px; max-width: 62ch; margin-top: 6px; line-height: 1.5; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+    padding: 6px 10px; font-size: 12px; color: var(--ink-2);
+  }
+  .chip b { color: var(--ink); font-weight: 500; font-family: "IBM Plex Mono", monospace; }
+
+  .stat {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+    padding: 10px 16px; min-width: 150px;
+  }
+  .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .stat .value { font-size: 26px; font-weight: 600; margin-top: 2px; }
+  .stat .delta { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  }
+  .panel h2 { font-size: 13px; font-weight: 600; }
+  .panel .hint { font-size: 12px; color: var(--muted); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); align-items: center; }
+  .legend .item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 0; border-top: 2px solid; border-radius: 2px; }
+  .swatch.dashed { border-top-style: dashed; }
+  svg { display: block; width: 100%; height: auto; }
+
+  .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--baseline); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--candidate); outline-offset: 2px; }
+  input[type="range"] { flex: 1; min-width: 160px; accent-color: var(--candidate); }
+  .iterlabel { font-size: 13px; color: var(--ink-2); min-width: 15ch; }
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; user-select: none; }
+
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12); padding: 8px 10px; font-size: 12px; color: var(--ink-2);
+    line-height: 1.5;
+  }
+  .tooltip b { color: var(--ink); font-weight: 500; }
+
+  details { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  summary { cursor: pointer; padding: 12px 16px; font-size: 13px; font-weight: 600; }
+  .tablewrap { overflow-x: auto; padding: 0 16px 16px; }
+  table { border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 12px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--muted); font-weight: 500; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div>
+        <h1>{{TITLE}}</h1>
+        <div class="sub">
+{{BLURB}}
+        </div>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="stat">
+      <div class="label">Best {{METRIC}}</div>
+      <div class="value mono" id="best-value">-</div>
+      <div class="delta" id="best-at">-</div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Function space</h2>
+      <div class="legend">
+        <span class="item"><span class="swatch dashed" style="border-color: var(--ink-2)"></span>{{TARGET_LABEL}}</span>
+        <span class="item"><span class="swatch" style="border-color: var(--candidate)"></span>candidate f<sub>i</sub></span>
+        <span class="item"><span class="swatch" style="border-color: var(--best)"></span>best so far</span>
+        <label class="toggle"><input type="checkbox" id="trails" checked>history trails</label>
+      </div>
+      <svg id="fn-svg" viewBox="0 0 640 420" role="img" aria-label="Candidate function versus target"></svg>
+      <div class="hint">Triangles on the baseline mark the candidate's basis centers (all within the sampling domain); stem height tracks amplitude, dashed cap width tracks lengthscale — wide caps can spill past the domain even though centers stay inside.</div>
+    </div>
+    <div class="panel">
+      <h2>Convergence</h2>
+      <div class="legend">
+        <span class="item" id="legend-init"><span class="swatch" style="border-color: var(--baseline)"></span>initial design</span>
+        <span class="item"><span class="swatch" style="border-color: var(--candidate)"></span>acquisitions</span>
+        <span class="item"><span class="swatch" style="border-color: var(--best)"></span>best so far</span>
+      </div>
+      <svg id="conv-svg" viewBox="0 0 460 420" role="img" aria-label="Objective per iteration with best-so-far envelope"></svg>
+      <div class="hint">Click a point to jump the function panel to that iteration.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <button id="play">Play</button>
+      <label class="toggle">speed
+        <input type="range" id="speed" min="1" max="20" value="7" step="1" style="flex:none; width:100px" aria-label="Playback speed">
+      </label>
+      <input type="range" id="slider" min="0" value="0" step="1" aria-label="Iteration">
+      <span class="iterlabel mono" id="iterlabel"></span>
+    </div>
+  </div>
+
+  <details>
+    <summary>Data table</summary>
+    <div class="tablewrap"><table id="datatable"></table></div>
+  </details>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const DATA = /*__DATA__*/;
+const META = /*__META__*/;
+
+const n = DATA.n;
+const hasInit = META.initial_acquisitions != null;
+const nInit = META.initial_acquisitions ?? 0;
+const T = DATA.t, PROFILE = DATA.profile, CURVES = DATA.curves, Y = DATA.y;
+
+const bestUpTo = [];
+{ let b = Infinity; for (let i = 0; i < n; i++) { b = Math.min(b, Y[i]); bestUpTo.push(b); } }
+const bestIdxUpTo = [];
+{ let bi = 0; for (let i = 0; i < n; i++) { if (Y[i] < Y[bi]) bi = i; bestIdxUpTo.push(bi); } }
+
+document.getElementById("best-value").textContent = bestUpTo[n - 1].toFixed(4);
+document.getElementById("best-at").textContent = "found at iteration " + (bestIdxUpTo[n - 1] + 1) + " of " + n;
+
+const chips = [
+  ["target", META.target], ["kernel", META.kernel], ["m", META.m],
+  ["seed", META.seed], ...(hasInit ? [["init", nInit]] : []), ["iterations", n],
+];
+if (!hasInit) document.getElementById("legend-init").style.display = "none";
+if (META.m != null) document.getElementById("mCount").textContent = META.m;
+document.getElementById("chips").innerHTML = chips
+  .map(([k, v]) => `<div class="chip">${k} <b>${v}</b></div>`).join("");
+
+// ---------- shared helpers ----------
+const svgNS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const e = document.createElementNS(svgNS, name);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function niceTicks(lo, hi, count) {
+  const span = hi - lo, step0 = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= count) || 10 * mag;
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(v);
+  return ticks;
+}
+const fmt = v => Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+const tooltip = document.getElementById("tooltip");
+function showTip(html, cx, cy) {
+  tooltip.innerHTML = html;
+  tooltip.style.display = "block";
+  const r = tooltip.getBoundingClientRect();
+  let x = cx + 14, y = cy - r.height - 10;
+  if (x + r.width > innerWidth - 8) x = cx - r.width - 14;
+  if (y < 8) y = cy + 14;
+  tooltip.style.left = x + "px";
+  tooltip.style.top = y + "px";
+}
+function hideTip() { tooltip.style.display = "none"; }
+
+// ---------- function-space panel ----------
+const FW = 640, FH = 420, FM = { l: 46, r: 12, t: 12, b: 46 };
+const tMin = T[0], tMax = T[T.length - 1];
+const [dLo, dHi] = DATA.domain || [0, 1];
+// y-limits: profile range plus robust quantiles of in-domain candidate values;
+// outlier candidates and extrapolated tails clip at the plot edge
+let yLo = Infinity, yHi = -Infinity;
+for (const v of PROFILE) if (v != null) { if (v < yLo) yLo = v; if (v > yHi) yHi = v; }
+{
+  const inDomain = [];
+  for (const c of CURVES) for (let j = 0; j < c.length; j++)
+    if (T[j] >= dLo && T[j] <= dHi) inDomain.push(c[j]);
+  inDomain.sort((a, b) => a - b);
+  yLo = Math.min(yLo, inDomain[Math.floor(0.005 * inDomain.length)]);
+  yHi = Math.max(yHi, inDomain[Math.floor(0.995 * inDomain.length)]);
+}
+{ const pad = 0.06 * (yHi - yLo); yLo -= pad; yHi += pad; }
+const fx = t => FM.l + (t - tMin) / (tMax - tMin) * (FW - FM.l - FM.r);
+const fy = v => FH - FM.b - (v - yLo) / (yHi - yLo) * (FH - FM.t - FM.b);
+const pathOf = vals => {
+  let d = "", pen = false;
+  for (let j = 0; j < vals.length; j++) {
+    if (vals[j] == null) { pen = false; continue; }
+    d += (pen ? "L" : "M") + fx(T[j]).toFixed(1) + " " + fy(vals[j]).toFixed(1);
+    pen = true;
+  }
+  return d;
+};
+
+const fnSvg = document.getElementById("fn-svg");
+// shade the extrapolation region outside the quadrature domain
+for (const [a, b] of [[tMin, dLo], [dHi, tMax]]) {
+  if (b <= a) continue;
+  el("rect", { x: fx(a), y: FM.t, width: fx(b) - fx(a), height: FH - FM.t - FM.b, fill: "var(--outside)" }, fnSvg);
+}
+const fnGrid = el("g", {}, fnSvg);
+for (const v of niceTicks(yLo, yHi, 6)) {
+  el("line", { x1: FM.l, x2: FW - FM.r, y1: fy(v), y2: fy(v), stroke: "var(--grid)", "stroke-width": 1 }, fnGrid);
+  el("text", { x: FM.l - 8, y: fy(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, fnGrid).textContent = fmt(v);
+}
+for (const t of niceTicks(tMin, tMax, 8)) {
+  if (t < tMin || t > tMax) continue;
+  el("text", { x: fx(t), y: FH - FM.b + 38, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, fnGrid).textContent = t;
+}
+// dashed bounds of the quadrature domain
+for (const t of [dLo, dHi]) {
+  el("line", { x1: fx(t), x2: fx(t), y1: FM.t, y2: FH - FM.b, stroke: "var(--baseline)", "stroke-width": 1, "stroke-dasharray": "4 4" }, fnSvg);
+}
+el("text", { x: fx((dLo + dHi) / 2), y: FM.t + 12, "text-anchor": "middle", "font-size": 10, fill: "var(--muted)", "letter-spacing": "0.06em" }, fnSvg).textContent = "{{DOMAIN_LABEL}}";
+el("line", { x1: FM.l, x2: FW - FM.r, y1: FH - FM.b, y2: FH - FM.b, stroke: "var(--baseline)", "stroke-width": 1 }, fnSvg);
+
+const clipDefs = el("defs", {}, fnSvg);
+el("rect", { x: FM.l, y: FM.t, width: FW - FM.l - FM.r, height: FH - FM.t - FM.b },
+  el("clipPath", { id: "plotclip" }, clipDefs));
+const clipG = el("g", { "clip-path": "url(#plotclip)" }, fnSvg);
+const trailsG = el("g", { fill: "none", stroke: "var(--trail)", "stroke-width": 1 }, clipG);
+const profilePath = el("path", { d: pathOf(PROFILE), fill: "none", stroke: "var(--ink-2)", "stroke-width": 2, "stroke-dasharray": "6 5" }, clipG);
+const bestPath = el("path", { fill: "none", stroke: "var(--best)", "stroke-width": 2, opacity: 0.9 }, clipG);
+const candPath = el("path", { fill: "none", stroke: "var(--candidate)", "stroke-width": 2.5 }, clipG);
+const stemsG = el("g", {}, fnSvg);
+
+// hover crosshair for the function panel
+const fnHover = el("g", { style: "display:none" }, fnSvg);
+const fnVLine = el("line", { y1: FM.t, y2: FH - FM.b, stroke: "var(--baseline)", "stroke-width": 1, "stroke-dasharray": "3 3" }, fnHover);
+const fnDotC = el("circle", { r: 4, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 2 }, fnHover);
+const fnDotP = el("circle", { r: 4, fill: "var(--ink-2)", stroke: "var(--surface)", "stroke-width": 2 }, fnHover);
+
+function drawStems(i) {
+  stemsG.innerHTML = "";
+  const cs = DATA.centers[i], as = DATA.amplitudes[i], ls = DATA.lengthscales[i];
+  const aMax = Math.max(...as.map(Math.abs), 1e-9);
+  const pxPerT = (FW - FM.l - FM.r) / (tMax - tMin);
+  for (let j = 0; j < cs.length; j++) {
+    if (cs[j] < tMin || cs[j] > tMax) continue;
+    const x = fx(cs[j]);
+    const h = 22 * Math.abs(as[j]) / aMax;
+    const y0 = FH - FM.b, y1 = as[j] >= 0 ? y0 - h : y0 + Math.min(h, 22);
+    el("line", { x1: x, x2: x, y1: y0, y2: y1, stroke: "var(--candidate)", "stroke-width": 2, opacity: 0.45 }, stemsG);
+    const halfw = Math.min(0.5 * Math.sqrt(ls[j]) * pxPerT, 40);
+    el("line", { x1: x - halfw, x2: x + halfw, y1: y1, y2: y1, stroke: "var(--candidate)", "stroke-width": 1.5, "stroke-dasharray": "3 2", opacity: 0.3 }, stemsG);
+    const cyDot = fy(CURVES[i][Math.round((cs[j] - tMin) / (tMax - tMin) * (T.length - 1))]);
+    if (cyDot >= FM.t && cyDot <= FH - FM.b)
+      el("circle", { cx: x, cy: cyDot, r: 3, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 1.5 }, stemsG);
+    el("path", { d: `M ${x} ${y0 - 5} L ${x - 4.5} ${y0 + 4} L ${x + 4.5} ${y0 + 4} Z`, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 1 }, stemsG);
+  }
+}
+
+// ---------- convergence panel ----------
+const CW = 460, CH = 420, CM = { l: 50, r: 12, t: 12, b: 34 };
+// log scale: convergence spans decades
+const cyLo = Math.min(...Y) / 1.15, cyHi = Math.max(...Y) * 1.15;
+// log x: doubling stages become equal-width regions;
+// initial design gets a narrow linear band so it doesn't eat half the log axis
+const CWp = CW - CM.l - CM.r;
+const initW = hasInit && n > nInit ? 0.1 * CWp : 0;
+const cx = i => {
+  if (!hasInit || n <= nInit) return CM.l + (n === 1 ? 0 : Math.log(i + 1) / Math.log(n)) * CWp;
+  if (i < nInit) return CM.l + (i / Math.max(nInit - 1, 1)) * initW;
+  return CM.l + initW + Math.log((i + 1) / nInit) / Math.log(n / nInit) * (CWp - initW);
+};
+const cy = v => CH - CM.b - (Math.log(v) - Math.log(cyLo)) / (Math.log(cyHi) - Math.log(cyLo)) * (CH - CM.t - CM.b);
+
+const logTicks = [];
+for (let e = Math.floor(Math.log10(cyLo)); e <= Math.ceil(Math.log10(cyHi)); e++)
+  for (const b of [1, 1.5, 2, 3, 5, 7]) {
+    const v = b * 10 ** e;
+    if (v >= cyLo && v <= cyHi) logTicks.push(v);
+  }
+
+const convSvg = document.getElementById("conv-svg");
+for (const v of logTicks) {
+  el("line", { x1: CM.l, x2: CW - CM.r, y1: cy(v), y2: cy(v), stroke: "var(--grid)", "stroke-width": 1 }, convSvg);
+  el("text", { x: CM.l - 8, y: cy(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, convSvg).textContent = fmt(v);
+}
+// doubling iteration ticks, uniform under the log axis; none inside the init band
+const xTicks = [];
+for (let t = hasInit && n > nInit ? nInit : 1; t <= n; t *= 2) xTicks.push(t);
+if (n > xTicks[xTicks.length - 1] * 1.2) xTicks.push(n);
+for (const t of xTicks) {
+  el("text", { x: cx(t - 1), y: CH - CM.b + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, convSvg).textContent = t;
+}
+el("text", { x: (CM.l + CW - CM.r) / 2, y: CH - 4, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" }, convSvg).textContent = "iteration";
+el("line", { x1: CM.l, x2: CW - CM.r, y1: CH - CM.b, y2: CH - CM.b, stroke: "var(--baseline)", "stroke-width": 1 }, convSvg);
+
+// stage delineation for m-schedule runs: [[m, start, end], ...] with end exclusive
+const STAGES = META.stages ?? null;
+const stageOf = i => STAGES?.find(([, s0, s1]) => i >= s0 && i < s1)?.[0] ?? null;
+if (STAGES) {
+  for (const [ms, s0, s1] of STAGES) {
+    if (s0 > 0) {
+      const xb = (cx(s0 - 1) + cx(s0)) / 2;
+      el("line", { x1: xb, x2: xb, y1: CM.t, y2: CH - CM.b, stroke: "var(--muted)", "stroke-width": 1, "stroke-dasharray": "2 4", opacity: 0.5 }, convSvg);
+    }
+    // label only regions wide enough to hold the text; hover still reports m
+    const x0 = cx(s0), x1 = cx(Math.min(s1, n) - 1);
+    if (x1 - x0 >= 34)
+      el("text", { x: (x0 + x1) / 2, y: CM.t + 11, "text-anchor": "middle", "font-size": 10, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }, convSvg).textContent = `m=${ms}`;
+  }
+}
+
+// best-so-far step line
+{
+  let d = "";
+  for (let i = 0; i < n; i++) {
+    d += (i ? "L" : "M") + cx(i).toFixed(1) + " " + cy(bestUpTo[i]).toFixed(1);
+    if (i < n - 1) d += "L" + cx(i + 1).toFixed(1) + " " + cy(bestUpTo[i]).toFixed(1);
+  }
+  el("path", { d, fill: "none", stroke: "var(--best)", "stroke-width": 2 }, convSvg);
+}
+const dots = [];
+for (let i = 0; i < n; i++) {
+  const dot = el("circle", {
+    cx: cx(i), cy: cy(Y[i]), r: 3.5,
+    fill: i < nInit ? "var(--baseline)" : "var(--candidate)",
+    stroke: "var(--surface)", "stroke-width": 1.5, style: "cursor:pointer",
+  }, convSvg);
+  dots.push(dot);
+}
+const cursorLine = el("line", { y1: CM.t, y2: CH - CM.b, stroke: "var(--candidate)", "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0.7 }, convSvg);
+
+// invisible fat hit layer for convergence hover/click
+for (let i = 0; i < n; i++) {
+  // midpoint-bounded hit zones, since log spacing is nonuniform
+  const hx0 = i === 0 ? CM.l : (cx(i - 1) + cx(i)) / 2;
+  const hx1 = i === n - 1 ? CW - CM.r : (cx(i) + cx(i + 1)) / 2;
+  const hit = el("rect", {
+    x: hx0, y: CM.t, width: Math.max(hx1 - hx0, 2), height: CH - CM.t - CM.b,
+    fill: "transparent", style: "cursor:pointer",
+  }, convSvg);
+  hit.addEventListener("mousemove", ev => {
+    dots[i].setAttribute("r", 5);
+    showTip(
+      `<b>iteration ${i + 1}</b>${hasInit ? (i < nInit ? " (initial design)" : " (EI acquisition)") : ""}${stageOf(i) != null ? `, m=${stageOf(i)}` : ""}<br>` +
+      `{{METRIC}} <b class="mono">${Y[i].toFixed(4)}</b><br>` +
+      `best so far <b class="mono">${bestUpTo[i].toFixed(4)}</b>`,
+      ev.clientX, ev.clientY);
+  });
+  hit.addEventListener("mouseleave", () => { dots[i].setAttribute("r", 3.5); hideTip(); });
+  hit.addEventListener("click", () => setIter(i, true));
+}
+
+// ---------- iteration state ----------
+const slider = document.getElementById("slider");
+slider.max = n - 1;
+const iterlabel = document.getElementById("iterlabel");
+const trailsBox = document.getElementById("trails");
+let cur = 0;
+
+function setIter(i, fromClick) {
+  cur = i;
+  slider.value = i;
+  candPath.setAttribute("d", pathOf(CURVES[i]));
+  bestPath.setAttribute("d", pathOf(CURVES[bestIdxUpTo[i]]));
+  bestPath.style.display = bestIdxUpTo[i] === i ? "none" : "";
+  drawStems(i);
+  trailsG.innerHTML = "";
+  if (trailsBox.checked) {
+    for (let j = Math.max(0, i - 20); j < i; j++)
+      el("path", { d: pathOf(CURVES[j]) }, trailsG);
+  }
+  cursorLine.setAttribute("x1", cx(i));
+  cursorLine.setAttribute("x2", cx(i));
+  iterlabel.textContent =
+    `iter ${String(i + 1).padStart(String(n).length)}/${n}` +
+    (stageOf(i) != null ? `  m=${stageOf(i)}` : "") +
+    `  {{METRIC_SHORT}} ${Y[i].toFixed(4)}`;
+  if (fromClick) stopPlay();
+}
+trailsBox.addEventListener("change", () => setIter(cur));
+slider.addEventListener("input", () => { setIter(+slider.value); stopPlay(); });
+
+// playback
+const playBtn = document.getElementById("play");
+const speedSlider = document.getElementById("speed");
+let timer = null;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const interval = () => Math.round(1000 / +speedSlider.value) * (reduced ? 4 : 1);
+function stopPlay() { if (timer) { clearInterval(timer); timer = null; playBtn.textContent = "Play"; } }
+function startPlay() {
+  playBtn.textContent = "Pause";
+  timer = setInterval(() => {
+    if (cur >= n - 1) { stopPlay(); return; }
+    setIter(cur + 1);
+  }, interval());
+}
+playBtn.addEventListener("click", () => {
+  if (timer) { stopPlay(); return; }
+  if (cur >= n - 1) setIter(0);
+  startPlay();
+});
+speedSlider.addEventListener("input", () => { if (timer) { clearInterval(timer); startPlay(); } });
+
+// function-panel hover readout
+fnSvg.addEventListener("mousemove", ev => {
+  const pt = fnSvg.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  const p = pt.matrixTransform(fnSvg.getScreenCTM().inverse());
+  const t = tMin + (p.x - FM.l) / (FW - FM.l - FM.r) * (tMax - tMin);
+  if (t < tMin || t > tMax) { fnHover.style.display = "none"; hideTip(); return; }
+  const j = Math.round((t - tMin) / (tMax - tMin) * (T.length - 1));
+  fnHover.style.display = "";
+  fnVLine.setAttribute("x1", fx(T[j]));
+  fnVLine.setAttribute("x2", fx(T[j]));
+  fnDotC.setAttribute("cx", fx(T[j])); fnDotC.setAttribute("cy", fy(CURVES[cur][j]));
+  const pv = PROFILE[j];
+  fnDotP.style.display = pv == null ? "none" : "";
+  if (pv != null) { fnDotP.setAttribute("cx", fx(T[j])); fnDotP.setAttribute("cy", fy(pv)); }
+  showTip(
+    `t = <b class="mono">${T[j].toFixed(3)}</b><br>` +
+    `candidate <b class="mono">${CURVES[cur][j].toFixed(3)}</b><br>` +
+    (pv != null
+      ? `target <b class="mono">${pv.toFixed(3)}</b>`
+      : `outside quadrature domain`),
+    ev.clientX, ev.clientY);
+});
+fnSvg.addEventListener("mouseleave", () => { fnHover.style.display = "none"; hideTip(); });
+
+// ---------- data table ----------
+{
+  const rows = Y.map((v, i) =>
+    `<tr><td>${i + 1}</td><td>${hasInit ? (i < nInit ? "initial" : "EI") : "-"}</td>` +
+    `<td class="mono">${v.toFixed(5)}</td><td class="mono">${bestUpTo[i].toFixed(5)}</td></tr>`).join("");
+  document.getElementById("datatable").innerHTML =
+    "<tr><th>iter</th><th>type</th><th>{{METRIC}}</th><th>best so far</th></tr>" + rows;
+}
+
+setIter(n - 1);
+</script>
