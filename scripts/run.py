@@ -29,18 +29,16 @@ from vlse import (
 )
 
 
-def maybe_expand(fs: rkhs.RBFMixture, ys: Float[Array, "o"]):
-    """Expand the buffers if they are full."""
+def expand_to(fs: rkhs.RBFMixture, ys: Float[Array, "o"], size: int):
+    """Grow the observation axis to size, filling new slots inert."""
 
     def expand(x: Float[Array, "o ..."], fill: float) -> Float[Array, "n ..."]:
         o, *rest = x.shape
-        n = 1 << o.bit_length()
-        return jnp.full((n, *rest), fill).at[:o].set(x)
+        return jnp.full((size, *rest), fill).at[:o].set(x)
 
-    if not jnp.isnan(ys).any():
-        fills = rkhs.RBFMixture(l=1.0, x=0.0, a=0.0)
-        fs = jax.tree.map(expand, fs, fills)
-        ys = expand(ys, jnp.nan)
+    fills = rkhs.RBFMixture(l=1.0, x=0.0, a=0.0)
+    fs = jax.tree.map(expand, fs, fills)
+    ys = expand(ys, jnp.nan)
     return fs, ys
 
 
@@ -54,9 +52,10 @@ def run(
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
+    save_path: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Sequential EI loop doubling the basis size, stage budget max(8, m)."""
+    """Sequential EI loop doubling the basis size, each stage doubling the observations."""
     key = jr.key(seed)
     d, k = target_fn.d, target_fn.k
     schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
@@ -73,9 +72,9 @@ def run(
 
     i = initial_acquisitions
     for m_stage in schedule:
-        # grow the basis axis on stage transitions, recompiling for the new shape
-        fs = fs.pad_to(m_stage)
-        stage_end = i + max(8, m_stage)
+        # grow both buffers at the stage boundary, so each stage compiles once
+        stage_end = 2 * i
+        fs, ys = expand_to(fs.pad_to(m_stage), ys, stage_end)
         while i < stage_end:
             # Fit the GP surrogate model to the current observations
             surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
@@ -90,7 +89,6 @@ def run(
             for j in range(min(batch_size, stage_end - i)):
                 f = jax.tree.map(lambda z: z[j], f_batch)
                 y = target_fn(f)
-                fs, ys = maybe_expand(fs, ys)
                 fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
                 ys = ys.at[i].set(y)
 
@@ -100,6 +98,10 @@ def run(
                         f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
                     )
                 i += 1
+
+        # checkpoint the completed stage so long runs are inspectable mid-flight
+        if save_path is not None:
+            np.savez(save_path, l=fs.l[:i], x=fs.x[:i], a=fs.a[:i], y=ys[:i])
 
     total_acquisitions = i
 
@@ -142,14 +144,18 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--m", type=int, default=16)
-    parser.add_argument("--initial_acquisitions", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--initial_acquisitions", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
 
     target_fn = target_fns[args.target_fn]()
     profile = profiles_options[args.profile]
+
+    save_dir = f"{args.results_dir}/{args.target_fn}/ours_adaptive/{args.profile}"
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
 
     results = run(
         seed=args.seed,
@@ -158,13 +164,9 @@ if __name__ == "__main__":
         m=args.m,
         initial_acquisitions=args.initial_acquisitions,
         batch_size=args.batch_size,
+        save_path=save_path,
         verbose=args.verbose,
     )
 
-    save_dir = f"{args.results_dir}/{args.target_fn}/ours_adaptive/{args.profile}"
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
-    fs, ys = results["observation_locations"], results["observation_values"]
-    np.savez(save_path, l=fs.l, x=fs.x, a=fs.a, y=ys)
     if args.verbose:
         print(f"Results saved to {save_path}")
