@@ -50,21 +50,21 @@ def run(
     profile: kernels.Profile,
     m: int,
     initial_acquisitions: int,
-    total_acquisitions: int,
     batch_size: int = 1,
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
     verbose: bool = False,
 ) -> dict:
-    """Sequential EI loop over the RKHS parametrization with a fixed basis size."""
+    """Sequential EI loop doubling the basis size, stage budget max(8, m)."""
     key = jr.key(seed)
     d, k = target_fn.d, target_fn.k
+    schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
 
     # initialize the observation buffers with the evaluated latin hypercube sample
     key, key_init = jr.split(key)
     fs = rkhs.RBFMixture.from_lhs(
-        key_init, (initial_acquisitions, k, m, d), l_range, x_range, a_range
+        key_init, (initial_acquisitions, k, schedule[0], d), l_range, x_range, a_range
     )
     ys = [
         target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
@@ -72,30 +72,36 @@ def run(
     ys = jnp.asarray(ys)
 
     i = initial_acquisitions
-    while i < total_acquisitions:
-        # Fit the GP surrogate model to the current observations
-        surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
+    for m_stage in schedule:
+        # grow the basis axis on stage transitions, recompiling for the new shape
+        fs = fs.pad_to(m_stage)
+        stage_end = i + max(8, m_stage)
+        while i < stage_end:
+            # Fit the GP surrogate model to the current observations
+            surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
 
-        # Optimize the acquisition function to find the next batch to evaluate
-        key, key_acq = jr.split(key)
-        f_batch = acquisition.optimize_expected_improvement(
-            key_acq, surrogate, l_range, x_range, a_range, batch_size=batch_size
-        )
+            # Optimize the acquisition function to find the next batch to evaluate
+            key, key_acq = jr.split(key)
+            f_batch = acquisition.optimize_expected_improvement(
+                key_acq, surrogate, l_range, x_range, a_range, batch_size=batch_size
+            )
 
-        # Evaluate and store each candidate, truncating the batch at the budget
-        for j in range(min(batch_size, total_acquisitions - i)):
-            f = jax.tree.map(lambda z: z[j], f_batch)
-            y = target_fn(f)
-            fs, ys = maybe_expand(fs, ys)
-            fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
-            ys = ys.at[i].set(y)
+            # Evaluate and store each candidate, truncating the batch at the budget
+            for j in range(min(batch_size, stage_end - i)):
+                f = jax.tree.map(lambda z: z[j], f_batch)
+                y = target_fn(f)
+                fs, ys = maybe_expand(fs, ys)
+                fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
+                ys = ys.at[i].set(y)
 
-            if verbose:
-                print(
-                    f"Iteration {i + 1}: "
-                    f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
-                )
-            i += 1
+                if verbose:
+                    print(
+                        f"Iteration {i + 1} (m={m_stage}): "
+                        f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
+                    )
+                i += 1
+
+    total_acquisitions = i
 
     return dict(
         observation_locations=jax.tree.map(lambda z: z[:total_acquisitions], fs),
@@ -135,9 +141,8 @@ if __name__ == "__main__":
         "--profile", choices=list(profiles_options.keys()), required=True
     )
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--m", type=int, default=8)
+    parser.add_argument("--m", type=int, default=16)
     parser.add_argument("--initial_acquisitions", type=int, default=10)
-    parser.add_argument("--n_acquisitions", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
@@ -152,7 +157,6 @@ if __name__ == "__main__":
         profile=profile,
         m=args.m,
         initial_acquisitions=args.initial_acquisitions,
-        total_acquisitions=args.initial_acquisitions + args.n_acquisitions,
         batch_size=args.batch_size,
         verbose=args.verbose,
     )
