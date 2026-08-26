@@ -62,8 +62,8 @@ def optimize_expected_improvement(
     surrogate: gp.GaussianProcess,
     l_range: tuple[Scalar, Scalar],
     x_range: tuple[Scalar, Scalar],
-    y_range: tuple[Scalar, Scalar],
-    multi_starts: int = 128,
+    a_range: tuple[Scalar, Scalar],
+    multi_starts: int = 32,
     n_probes: int = 1024,
 ) -> rkhs.RBFMixture:
     """Maximise log EI over RBF mixtures, screening random probes then L-BFGS-B."""
@@ -74,15 +74,15 @@ def optimize_expected_improvement(
     l_floor = (surrogate.l0.max() - surrogate.x.l.min()) * 1.01
     l_range = (l_range[0].clip(min=l_floor), l_range[1])
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
-    bounds = tuple(zip(log_l_range, x_range, y_range))
+    bounds = tuple(zip(log_l_range, x_range, a_range))
 
     # probe the space via latin hypercube, squared lengthscales log-uniform
     p = utils.latin_hypercube_sample(key, (n_probes, k, m, 2 * d + 1))
-    log_l, x, y = jnp.split(p, [d, 2 * d], axis=-1)
+    log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
     log_l = utils.rescale(log_l, *log_l_range)
     x = utils.rescale(x, *x_range)
-    y = utils.rescale(y, *y_range)
-    candidates = rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y.squeeze(-1))
+    a = utils.rescale(a, *a_range)
+    candidates = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
 
     # keep the probes with the best log EI as multistart candidates
     # add a mock axis so predict computes marginals only
@@ -93,24 +93,22 @@ def optimize_expected_improvement(
     _, best = jax.lax.top_k(log_ei, multi_starts)
     candidates = jax.tree.map(lambda z: z[best], candidates)
 
-    # vmap so each candidate and output computes its own y only
-    log_l, x = jnp.log(candidates.l), candidates.x
-    y = jax.vmap(jax.vmap(jax.vmap(lambda f: f(f.x))))(candidates)
+    log_l, x, a = jnp.log(candidates.l), candidates.x, candidates.a
 
     # box constrained L-BFGS-B
-    def loss(lxy):
-        log_l, x, y = lxy
-        f = rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y)
+    def loss(lxa):
+        log_l, x, a = lxa
+        f = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
         mu, cov = surrogate.predict(f)
         mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
         return -log_expected_improvement(mu, sigma, y_best)
 
-    solve = lambda lxy: vlse.optim.minimise(loss, lxy, bounds=bounds)
-    results = jax.vmap(solve)((log_l, x, y))
+    solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds)
+    results = jax.vmap(solve)((log_l, x, a))
 
     # return the candidate with the best log EI
     all_dead = ~jnp.any(jnp.isfinite(results.f))
     results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
     best = jnp.nanargmin(results.f)
-    log_l, x, y = jax.tree.map(lambda z: z[best, 0], results.x)
-    return rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y)
+    log_l, x, a = jax.tree.map(lambda z: z[best, 0], results.x)
+    return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)

@@ -21,41 +21,21 @@ class RBFMixture(NamedTuple):
 
     @staticmethod
     @eqx.filter_jit
-    def from_lxy(
-        l: Float[Array, "... m d"],
-        x: Float[Array, "... m d"],
-        y: Float[Array, "... m"],
-        eps: Scalar = jnp.array(1e-2),
-    ):
-        """Construct a mixture of RBFs that interpolates the given points."""
-        d = kernels.euclidean_distance(
-            l[..., None, :, :],
-            x[..., :, None, :],
-            x[..., None, :, :],
-        )
-        # zero out the diagonal, float arithmetic does not cancel out exactly
-        d = jnp.where(jnp.eye(y.shape[-1], dtype=bool), 0.0, d)
-        Kxx = kernels.rbf(d) + eps * jnp.eye(y.shape[-1])
-        a = jnp.linalg.solve(Kxx, y[..., None]).squeeze(-1)
-        return RBFMixture(l=l, x=x, a=a)
-
-    @staticmethod
-    @eqx.filter_jit
     def from_lhs(
         key,
         shape: tuple[int, ...],
         l_range: tuple[Scalar, Scalar],
         x_range: tuple[Scalar, Scalar],
-        y_range: tuple[Scalar, Scalar],
+        a_range: tuple[Scalar, Scalar],
     ) -> "RBFMixture":
         """Latin-hypercube mixtures with log-uniform squared lengthscales."""
         *batch, m, d = shape
         p = utils.latin_hypercube_sample(key, (*batch, m, 2 * d + 1))
-        log_l, x, y = jnp.split(p, [d, 2 * d], axis=-1)
+        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
         log_l = utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1]))
         x = utils.rescale(x, *x_range)
-        y = utils.rescale(y, *y_range)
-        return RBFMixture.from_lxy(jnp.exp(log_l), x, y.squeeze(-1))
+        a = utils.rescale(a, *a_range)
+        return RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
 
     def pad_to(self, m: int) -> Self:
         """Pad the mixture to a larger number of basis points."""

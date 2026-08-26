@@ -11,6 +11,7 @@ import jax.random as jr
 
 from bofus import gp, kernels, rkhs, acquisition
 from targets import (
+    TestFunction,
     Ridge,
     Projection,
     Pendulum,
@@ -20,7 +21,6 @@ from targets import (
     MNIST,
 )
 from vlse import (
-    TestFunction,
     GramacyLee,
     Ackley,
     Hartmann3,
@@ -53,7 +53,7 @@ def run(
     total_acquisitions: int,
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
-    y_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
+    a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
     verbose: bool = False,
 ) -> dict:
     """Sequential EI loop over the RKHS parametrization with a fixed basis size."""
@@ -63,7 +63,7 @@ def run(
     # initialize the observation buffers with the evaluated latin hypercube sample
     key, key_init = jr.split(key)
     fs = rkhs.RBFMixture.from_lhs(
-        key_init, (initial_acquisitions, k, m, d), l_range, x_range, y_range
+        key_init, (initial_acquisitions, k, m, d), l_range, x_range, a_range
     )
     ys = [
         target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
@@ -77,7 +77,7 @@ def run(
         # Optimize the acquisition function to find the next point to evaluate
         key, key_acq = jr.split(key)
         f = acquisition.optimize_expected_improvement(
-            key_acq, surrogate, l_range, x_range, y_range
+            key_acq, surrogate, l_range, x_range, a_range
         )
 
         # Evaluate the target function at the new point
