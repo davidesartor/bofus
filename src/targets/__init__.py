@@ -3,13 +3,16 @@ from jaxtyping import Float, Array, Scalar
 
 
 class TestFunction(Protocol):
-    d: int  # dimension of the input space
-    m: int = 1  # number of outputs
+    d: int  # number of inputs
+    k: int  # number of outputs
 
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar: ...
+    def __call__(
+        self, f: Callable[[Float[Array, "d"]], Float[Array, "k"]]
+    ) -> Scalar: ...
 
 
 from .ridge import Ridge
+from .projection import Projection
 from .gymnasium import Pendulum
 from .pinwheel import PinWheel
 from .neuralnetworks import MNIST

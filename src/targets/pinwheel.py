@@ -136,6 +136,7 @@ def rollout(
 
 class PinWheel:
     d: int = 1
+    k: int = 1
     """
     2-link impedance-controlled arm interacting with a pinwheel.
 

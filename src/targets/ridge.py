@@ -5,11 +5,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
-import vlse.functions.base as vlse_base
-
-from bofus import kernels, rkhs
-
-Profile = vlse_base.TestFunction
+from vlse.functions.base import TestFunction as Profile
 
 
 class Ridge:
@@ -32,6 +28,7 @@ class Ridge:
         seed: int = 0,
     ):
         self.d = d = profile.d
+        self.k = 1
         self.profile = profile
         self.n_points = n_points
         k1, k2, k3, k4 = jr.split(jr.key(seed), 4)
@@ -76,7 +73,7 @@ class Ridge:
         )
 
     @eqx.filter_jit
-    def __call__(self, f: Callable[[Float[Array, "d"]], Scalar]) -> Scalar:
+    def __call__(self, f: Callable[[Float[Array, "d"]], Float[Array, "k"]]) -> Scalar:
         """Profile of the quadrature estimates of g_i = b_i + int w_i f, squashed to [0, 1]."""
         g = self.b + jnp.mean(self.w * jax.vmap(f)(self.x).squeeze(-1), axis=-1)
         return self.profile(jax.nn.sigmoid(g))

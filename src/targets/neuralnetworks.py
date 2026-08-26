@@ -23,6 +23,7 @@ class ResidualActivation(eqx.Module):
 
 class MNIST:
     d: int = 1
+    k: int = 1
 
     def __init__(
         self,

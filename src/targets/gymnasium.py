@@ -9,6 +9,7 @@ from targets import TestFunction
 
 class Pendulum:
     d: int = 2
+    k: int = 1
 
     def __init__(
         self,

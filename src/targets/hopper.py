@@ -140,7 +140,7 @@ class HoppingRobot:
     """
 
     d: int = 1  # normalized time
-    m: int = 2  # hip and knee
+    k: int = 2  # hip and knee
 
     def __init__(
         self,
