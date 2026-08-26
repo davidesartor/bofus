@@ -1,140 +1,111 @@
 from collections import defaultdict
-from jaxtyping import Array, Float, Scalar
+from jaxtyping import Array, Float
 import jax
 import jax.numpy as jnp
-import equinox as eqx
-import scipy as sp
-import numpy as np
 
 import argparse
 import time
 import os
 import pickle
 
-from bofus import gp, kernels, acquisition, rkhs
+from bofus import gp, kernels, rkhs, acquisition
 import targets
-
-jax.config.update("jax_enable_x64", True)
+import vlse
 
 RESULTS_DIR = os.environ.get("RESULTS_DIR", "results/neurips")
 
 VERBOSE = False
 
-SAVE_DTYPE = np.float32
+RHO_RANGE = (0.05, 0.4)  # candidate lengthscales, same range the sweeps scan
 
-
-def downcast(tree, dtype: np.dtype = SAVE_DTYPE):
-    """Store every float array at reduced precision; the pickles run to gigabytes otherwise."""
-
-    def cast(leaf):
-        if isinstance(leaf, (jax.Array, np.ndarray)) and leaf.dtype.kind == "f":
-            return np.asarray(leaf, dtype)
-        return leaf
-
-    return jax.tree.map(cast, tree)
-
-
-def vprint(*args, **kwargs) -> None:
-    """Print only under --verbose; sweeps run thousands of these and the logs add up."""
-    if VERBOSE:
-        print(*args, **kwargs)
-
-
-# the acquisition loss lives at module level, so every varying quantity is an argument and
-# the jit cache is reused across iterations instead of being rebuilt with each closure
-
-
-def decode(p: Float[Array, "k*(m*(d+1)+d)"], d: int, k: int) -> rkhs.Function:
-    """Decode a candidate that carries its own lengthscales in the trailing k*d entries."""
-    # the lengthscales are optimized in log scale
-    log_lo, log_hi = np.log(rkhs.RHO_RANGE[0]), np.log(rkhs.RHO_RANGE[1])
-    rho = jnp.exp(p[-k * d :].reshape(k, d) * (log_hi - log_lo) + log_lo)
-    return rkhs.Function.from_array(rho, p[: -k * d].reshape(k, -1, d + 1))
-
-
-def negative_log_ei(p: Float[Array, "k*(m*(d+1)+d)"], posterior, d: int, k: int) -> Scalar:
-    """EI of the function parametrized by basis points plus its own lengthscales."""
-    mu, cov = posterior.predict([decode(p, d, k)])
-    return -acquisition.log_expected_improvement(
-        mu=mu.squeeze(), sigma=cov.squeeze() ** 0.5, y_best=posterior.y_best
-    )
-
-
-@eqx.filter_jit
-def screening_loss(ps, posterior, d: int, k: int) -> Float[Array, "n"]:
-    return jax.vmap(negative_log_ei, in_axes=(0, None, None, None))(ps, posterior, d, k)
-
-
-acquisition_loss = eqx.filter_jit(jax.value_and_grad(negative_log_ei))
+TARGET_FNS = {
+    "gramacylee": lambda: targets.Ridge(vlse.GramacyLee(normalized=True)),
+    "ackley": lambda: targets.Ridge(vlse.Ackley(d=2, normalized=True)),
+    "hartmann": lambda: targets.Ridge(vlse.Hartmann3(normalized=True)),
+    "rosenbrock": lambda: targets.Ridge(vlse.Rosenbrock(d=4, normalized=True)),
+    "michalewicz": lambda: targets.Ridge(vlse.Michalewicz(d=5, normalized=True)),
+    "pendulum": targets.Pendulum,
+    "pinwheel": targets.PinWheel,
+    "brachistochrone": targets.Brachistochrone,
+    "hopper": targets.HoppingRobot,
+    "mnist": targets.MNIST,
+}
 
 
 def run(
     seed: int,
     target_fn: targets.TestFunction,
-    surrogate_model: gp.FunctionalGaussianProcess,
+    profile: kernels.Profile,
+    m: int,
     initial_acquisitions: int,
-    minimum_m: int,
-    maximum_m: int,
-    acquisitions_each_m: int,
-    acquisition_raw_samples: int,
-    acquisition_max_restarts: int,
+    n_acquisitions: int,
 ) -> dict:
-    """Sequential EI loop over the RKHS parametrization, one basis point budget at a time."""
-    rng = np.random.default_rng(seed=seed)
+    """Sequential EI loop over the RKHS parametrization with a fixed basis size."""
+    key = jax.random.key(seed)
     d, k = target_fn.d, getattr(target_fn, "m", 1)
     timings: dict[str, float] = defaultdict(float)
 
-    fs: list[rkhs.Function] = []
-    ys: Float[Array, "n"] = jnp.zeros(0)
+    # candidate ranges: squared lengthscales, basis points in the unit box, values in [-1,1]
+    l_range = (jnp.asarray(RHO_RANGE[0] ** 2), jnp.asarray(RHO_RANGE[1] ** 2))
+    x_range = (jnp.asarray(0.0), jnp.asarray(1.0))
+    y_range = (jnp.asarray(-1.0), jnp.asarray(1.0))
 
-    def record(new_fs: list[rkhs.Function]) -> None:
-        nonlocal fs, ys, surrogate_model
+    # padded buffers: nan observations mark unused capacity
+    fs = rkhs.RBFMixture(
+        l=jnp.ones((0, k, m, d)), x=jnp.zeros((0, k, m, d)), a=jnp.zeros((0, k, m))
+    )
+    ys: Float[Array, "n"] = jnp.zeros(0)
+    n = 0
+
+    def record(new_fs: rkhs.RBFMixture) -> gp.GaussianProcess:
+        """Evaluate a batch of candidates, write them into the buffers, refit the surrogate."""
+        nonlocal fs, ys, n
         timer = time.perf_counter()
-        new_ys = jnp.array([target_fn(f) for f in new_fs])
+        rows = [jax.tree.map(lambda z: z[i], new_fs) for i in range(new_fs.a.shape[0])]
+        new_ys = jnp.array([target_fn(f) for f in rows])
         timings["target_evaluation"] += time.perf_counter() - timer
 
-        fs, ys = fs + list(new_fs), jnp.concatenate([ys, new_ys])
         timer = time.perf_counter()
-        # observations are append-only, so the previous distance block stays valid
-        surrogate_model = surrogate_model.fit(fs, ys, cached_dists=surrogate_model.d2)
-        timings["surrogate_fit"] += time.perf_counter() - timer
 
-    # every output gets m basis points of d+1 entries, plus its own d lengthscales
-    sampler = lambda m: sp.stats.qmc.LatinHypercube(d=k * (m * (d + 1) + d), rng=rng)
+        # grow to the next power of two when out of capacity, so the fit rarely retraces
+        n_new = len(new_ys)
+        if n + n_new > len(ys):
+            N = 1 << (n + n_new - 1).bit_length()
+            pad = lambda z, fill: jnp.concat([z, jnp.full((N - len(ys), *z.shape[1:]), fill)])
+            fs = rkhs.RBFMixture(l=pad(fs.l, 1.0), x=pad(fs.x, 0.0), a=pad(fs.a, 0.0))
+            ys = pad(ys, jnp.nan)
+
+        fs = jax.tree.map(lambda z, w: z.at[n : n + n_new].set(w), fs, new_fs)
+        ys = ys.at[n : n + n_new].set(new_ys)
+        n += n_new
+
+        surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
+        timings["surrogate_fit"] += time.perf_counter() - timer
+        return surrogate
 
     timer = time.perf_counter()
-    candidate_sampler = sampler(minimum_m)
-    initial_fs = [
-        decode(jnp.asarray(p), d, k)
-        for p in candidate_sampler.random(n=initial_acquisitions)
-    ]
+    key, init_key = jax.random.split(key)
+    initial = rkhs.RBFMixture.from_lhs(
+        init_key, (initial_acquisitions, k, m, d), l_range, x_range, y_range
+    )
     timings["acquisition"] += time.perf_counter() - timer
-    record(initial_fs)
+    surrogate_model = record(initial)
 
-    for m in range(minimum_m, maximum_m + 1):
-        candidate_sampler = sampler(m)
-        for i in range(acquisitions_each_m):
-            timer = time.perf_counter()
-            ps = jnp.array(candidate_sampler.random(n=acquisition_raw_samples))
-            posterior = surrogate_model.posterior
-            p, _ = acquisition.optimize_lhs_candidates(
-                acquisition_loss=acquisition_loss,
-                loss_args=(posterior, d, k),
-                candidates=ps,
-                max_restarts=acquisition_max_restarts,
-                screening_loss=lambda ps: screening_loss(ps, posterior, d, k),
-            )
-            timings["acquisition"] += time.perf_counter() - timer
+    for i in range(n_acquisitions):
+        timer = time.perf_counter()
+        key, acq_key = jax.random.split(key)
+        f = acquisition.optimize_expected_improvement(
+            acq_key, surrogate_model, l_range, x_range, y_range
+        )
+        timings["acquisition"] += time.perf_counter() - timer
 
-            record([decode(p, d, k)])
-            vprint(
-                f"Iteration {i+1} (m={m}): "
-                f"current = {ys[-1]:.8f}, best = {ys.min():.8f}\n"
-            )
+        surrogate_model = record(jax.tree.map(lambda z: z[None], f))
+        if VERBOSE:
+            print(f"Iteration {i+1}: current = {ys[n-1]:.8f}, best = {jnp.nanmin(ys):.8f}\n")
 
     return dict(
-        observation_locations=fs,
-        observation_values=ys,
+        observation_locations=jax.tree.map(lambda z: z[:n], fs),
+        observation_values=ys[:n],
         **{f"{stage}_time": t for stage, t in timings.items()},
     )
 
@@ -143,50 +114,43 @@ def main():
     global VERBOSE
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target_fn", choices=list(targets.TARGET_FNS))
+    parser.add_argument("--target_fn", choices=list(TARGET_FNS), required=True)
     parser.add_argument(
-        "--profile", choices=["rbf", "matern52", "matern32", "matern12"]
+        "--profile", choices=["rbf", "matern52", "matern32", "matern12"], required=True
     )
     parser.add_argument("--seed", type=int, required=True)
     # simulation parameters
+    parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--initial_acquisitions", type=int, default=10)
-    parser.add_argument("--minimum_m", type=int, default=1)
-    parser.add_argument("--maximum_m", type=int, default=10)
-    parser.add_argument("--acquisitions_each_m", type=int, default=10)
-    parser.add_argument("--acquisition_raw_samples", type=int, default=1024)
-    parser.add_argument("--acquisition_max_restarts", type=int, default=16)
+    parser.add_argument("--n_acquisitions", type=int, default=100)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     VERBOSE = args.verbose
 
-    target_fn = targets.make_target(args.target_fn)
+    target_fn = TARGET_FNS[args.target_fn]()
     profile = {
-        "rbf": kernels.squared_exponential,
+        "rbf": kernels.rbf,
         "matern12": kernels.matern12,
         "matern32": kernels.matern32,
         "matern52": kernels.matern52,
     }[args.profile]
-    # adaptive candidates need an ambient below their range, so that l1 + l2 - l0 > 0
-    ambient_rho = jnp.full(target_fn.d, rkhs.RHO_RANGE[0])
 
     results = run(
         seed=args.seed,
         target_fn=target_fn,
-        surrogate_model=gp.FunctionalGaussianProcess(profile=profile, ambient_rho=ambient_rho),
+        profile=profile,
+        m=args.m,
         initial_acquisitions=args.initial_acquisitions,
-        minimum_m=args.minimum_m,
-        maximum_m=args.maximum_m,
-        acquisitions_each_m=args.acquisitions_each_m,
-        acquisition_raw_samples=args.acquisition_raw_samples,
-        acquisition_max_restarts=args.acquisition_max_restarts,
+        n_acquisitions=args.n_acquisitions,
     )
 
     save_dir = f"{RESULTS_DIR}/{args.target_fn}/ours_adaptive/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
-    save_path = f"{save_dir}/seed_{args.seed}"
-    pickle.dump(downcast(results), open(f"{save_path}.pkl", "wb"))
-    vprint(f"Results saved to {save_path}.pkl")
+    save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}"
+    pickle.dump(results, open(f"{save_path}.pkl", "wb"))
+    if VERBOSE:
+        print(f"Results saved to {save_path}.pkl")
 
 
 if __name__ == "__main__":
