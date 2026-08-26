@@ -94,7 +94,7 @@ def test_optimize_returns_valid_candidate():
     )
 
     def neg_log_ei(f):
-        mu, cov = surrogate.predict(jax.tree.map(lambda z: z[None], f))
+        mu, cov = surrogate.predict(f)
         return -log_expected_improvement(
             mu.squeeze(), cov.squeeze() ** 0.5, jnp.nanmin(surrogate.y)
         )
@@ -118,6 +118,11 @@ def test_optimize_clips_l_floor_to_the_ambient():
     surrogate = gp.GaussianProcess.fit(fs, ys, profile=kernels.matern52)
 
     best = optimize_expected_improvement(key, surrogate, wide, X_RANGE, Y_RANGE)
-    l_floor = float((surrogate.l0.max() - surrogate.x.l.min()) * 1.01)
+    l_floor = float(
+        jnp.maximum(
+            surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2
+        )
+        * 1.01
+    )
     assert bool((best.l >= max(float(wide[0]), l_floor) - 1e-8).all())
     assert bool(jnp.isfinite(best.a).all())

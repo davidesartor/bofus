@@ -100,8 +100,8 @@ def optimize_expected_improvement(
     _, k, m, d = surrogate.x.l.shape
     y_best = jnp.nanmin(surrogate.y)
 
-    # the ambient inner product needs l + l_obs - l0 > 0, so clip the lower end
-    l_floor = (surrogate.l0.max() - surrogate.x.l.min()) * 1.01
+    # ambient inner products need l + l_obs - l0 > 0 and 2l - l0 > 0, so clip the lower end
+    l_floor = jnp.maximum(surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2) * 1.01
     l_range = (l_range[0].clip(min=l_floor), l_range[1])
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
     bounds = tuple(zip(log_l_range, x_range, a_range))
