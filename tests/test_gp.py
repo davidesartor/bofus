@@ -10,10 +10,10 @@ D, M, K = 1, 3, 1
 def make_functions(n: int, m: int = M, d: int = D, k: int = K, seed: int = 0):
     rng = np.random.default_rng(seed)
     l = jnp.full((n, k, m, d), 0.2**2)
-    fs = rkhs.RBFMixture.from_lxy(
-        l,
-        jnp.asarray(rng.random((n, k, m, d))),
-        jnp.asarray(rng.uniform(-1, 1, (n, k, m))),
+    fs = rkhs.RBFMixture(
+        l=l,
+        x=jnp.asarray(rng.random((n, k, m, d))),
+        a=jnp.asarray(rng.uniform(-1, 1, (n, k, m))),
     )
     ys = jnp.asarray(rng.standard_normal(n))
     return fs, ys
