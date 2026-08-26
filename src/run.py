@@ -10,8 +10,23 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from bofus import gp, kernels, rkhs, acquisition
-import targets
-import vlse
+from targets import (
+    Ridge,
+    Projection,
+    Pendulum,
+    PinWheel,
+    Brachistochrone,
+    HoppingRobot,
+    MNIST,
+)
+from vlse import (
+    TestFunction,
+    GramacyLee,
+    Ackley,
+    Hartmann3,
+    Rosenbrock,
+    Michalewicz,
+)
 
 
 def maybe_expand(fs: rkhs.RBFMixture, ys: Float[Array, "o"]):
@@ -31,7 +46,7 @@ def maybe_expand(fs: rkhs.RBFMixture, ys: Float[Array, "o"]):
 
 def run(
     seed: int,
-    target_fn: targets.TestFunction,
+    target_fn: TestFunction,
     profile: kernels.Profile,
     m: int,
     initial_acquisitions: int,
@@ -86,28 +101,22 @@ def run(
 
 
 if __name__ == "__main__":
-    vlse_targets = dict(
-        gramacylee=vlse.GramacyLee(normalized=True),
-        ackley=vlse.Ackley(d=2, normalized=True),
-        hartmann=vlse.Hartmann3(normalized=True),
-        rosenbrock=vlse.Rosenbrock(d=4, normalized=True),
-        michalewicz=vlse.Michalewicz(d=5, normalized=True),
-    )
-
     target_fns = dict(
-        **{
-            f"{name}_ridge": partial(targets.Ridge, function)
-            for name, function in vlse_targets.items()
-        },
-        **{
-            f"{name}_projection": partial(targets.Projection, function)
-            for name, function in vlse_targets.items()
-        },
-        pendulum=targets.Pendulum,
-        pinwheel=targets.PinWheel,
-        brachistochrone=targets.Brachistochrone,
-        hopper=targets.HoppingRobot,
-        mnist=targets.MNIST,
+        gramacylee_ridge=partial(Ridge, GramacyLee(normalized=True)),
+        ackley_ridge=partial(Ridge, Ackley(d=2, normalized=True)),
+        hartmann_ridge=partial(Ridge, Hartmann3(normalized=True)),
+        rosenbrock_ridge=partial(Ridge, Rosenbrock(d=4, normalized=True)),
+        michalewicz_ridge=partial(Ridge, Michalewicz(d=5, normalized=True)),
+        gramacylee_projection=partial(Projection, GramacyLee(normalized=True)),
+        ackley_projection=partial(Projection, Ackley(d=2, normalized=True)),
+        hartmann_projection=partial(Projection, Hartmann3(normalized=True)),
+        rosenbrock_projection=partial(Projection, Rosenbrock(d=4, normalized=True)),
+        michalewicz_projection=partial(Projection, Michalewicz(d=5, normalized=True)),
+        pendulum=Pendulum,
+        pinwheel=PinWheel,
+        brachistochrone=Brachistochrone,
+        hopper=HoppingRobot,
+        mnist=MNIST,
     )
 
     profiles_options = dict(
