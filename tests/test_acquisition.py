@@ -68,7 +68,7 @@ def test_matches_vmap_over_scalars():
 
 # ---- sampling and optimization over RBF mixtures ----
 
-from bofus import gp, kernels, rkhs, utils
+from bofus import gp, kernels, rkhs
 from bofus.acquisition import optimize_expected_improvement
 
 L_RANGE = (jnp.array(0.05**2), jnp.array(0.4**2))
@@ -77,13 +77,7 @@ Y_RANGE = (jnp.array(-1.0), jnp.array(1.0))
 
 
 def sample_functions(key, shape):
-    n, k, m, d = shape
-    p = utils.latin_hypercube_sample(key, (n, k, m, 2 * d + 1))
-    log_l, x, y = jnp.split(p, [d, 2 * d], axis=-1)
-    log_l = utils.rescale(log_l, jnp.log(L_RANGE[0]), jnp.log(L_RANGE[1]))
-    x = utils.rescale(x, *X_RANGE)
-    y = utils.rescale(y, *Y_RANGE)
-    return rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y.squeeze(-1))
+    return rkhs.RBFMixture.from_lhs(key, shape, L_RANGE, X_RANGE, Y_RANGE)
 
 
 def make_surrogate(n=8, k=2, m=3, d=2, seed=0):

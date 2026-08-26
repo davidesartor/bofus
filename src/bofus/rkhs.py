@@ -1,9 +1,9 @@
 from typing import NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
-import jax
 import jax.numpy as jnp
-from .kernels import rbf, euclidean_distance
+import equinox as eqx
+from . import kernels, utils
 
 
 class RBFMixture(NamedTuple):
@@ -11,16 +11,16 @@ class RBFMixture(NamedTuple):
     x: Float[Array, "... m d"]
     a: Float[Array, "... m"]
 
-    @jax.jit
+    @eqx.filter_jit
     def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
         """Evaluate the function at points x."""
         x = x[..., *(None,) * self.a.ndim, :]
-        d = euclidean_distance(self.l, x, self.x)
-        y = jnp.sum(self.a * rbf(d), axis=-1)
+        d = kernels.euclidean_distance(self.l, x, self.x)
+        y = jnp.sum(self.a * kernels.rbf(d), axis=-1)
         return y
 
     @staticmethod
-    @jax.jit
+    @eqx.filter_jit
     def from_lxy(
         l: Float[Array, "... m d"],
         x: Float[Array, "... m d"],
@@ -28,16 +28,34 @@ class RBFMixture(NamedTuple):
         eps: Scalar = jnp.array(1e-2),
     ):
         """Construct a mixture of RBFs that interpolates the given points."""
-        d = euclidean_distance(
+        d = kernels.euclidean_distance(
             l[..., None, :, :],
             x[..., :, None, :],
             x[..., None, :, :],
         )
         # zero out the diagonal, float arithmetic does not cancel out exactly
         d = jnp.where(jnp.eye(y.shape[-1], dtype=bool), 0.0, d)
-        Kxx = rbf(d) + eps * jnp.eye(y.shape[-1])
+        Kxx = kernels.rbf(d) + eps * jnp.eye(y.shape[-1])
         a = jnp.linalg.solve(Kxx, y[..., None]).squeeze(-1)
         return RBFMixture(l=l, x=x, a=a)
+
+    @staticmethod
+    @eqx.filter_jit
+    def from_lhs(
+        key,
+        shape: tuple[int, ...],
+        l_range: tuple[Scalar, Scalar],
+        x_range: tuple[Scalar, Scalar],
+        y_range: tuple[Scalar, Scalar],
+    ) -> "RBFMixture":
+        """Latin-hypercube mixtures with log-uniform squared lengthscales."""
+        *batch, m, d = shape
+        p = utils.latin_hypercube_sample(key, (*batch, m, 2 * d + 1))
+        log_l, x, y = jnp.split(p, [d, 2 * d], axis=-1)
+        log_l = utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1]))
+        x = utils.rescale(x, *x_range)
+        y = utils.rescale(y, *y_range)
+        return RBFMixture.from_lxy(jnp.exp(log_l), x, y.squeeze(-1))
 
     def pad_to(self, m: int) -> Self:
         """Pad the mixture to a larger number of basis points."""
@@ -48,7 +66,7 @@ class RBFMixture(NamedTuple):
         return self._replace(l=l, x=x, a=a)
 
 
-@jax.jit
+@eqx.filter_jit
 def rbf_inner(
     l0: Float[Array, "... d"],
     f1: RBFMixture,
@@ -68,12 +86,12 @@ def rbf_inner(
     scale = jnp.sqrt(jnp.prod(lp, axis=-1))
 
     # inner kernel matrix, infinite if any pair falls outside the ambient rkhs
-    K = scale * rbf(euclidean_distance(ls, x1, x2))
+    K = scale * kernels.rbf(kernels.euclidean_distance(ls, x1, x2))
     k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
     return jnp.where(valid, k, jnp.inf)
 
 
-@jax.jit
+@eqx.filter_jit
 def rbf_distance(
     l0: Float[Array, "... d"],
     f1: RBFMixture,
