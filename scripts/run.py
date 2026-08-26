@@ -72,6 +72,13 @@ def run(
 
     i = initial_acquisitions
     for m_stage in schedule:
+        # freeze the previous stage's best as the fixed prefix for new candidates
+        f_fixed = (
+            None
+            if m_stage == schedule[0]
+            else jax.tree.map(lambda z: z[jnp.nanargmin(ys)], fs)
+        )
+
         # grow both buffers at the stage boundary, so each stage compiles once
         stage_end = 2 * i
         fs, ys = expand_to(fs.pad_to(m_stage), ys, stage_end)
@@ -82,7 +89,13 @@ def run(
             # Optimize the acquisition function to find the next batch to evaluate
             key, key_acq = jr.split(key)
             f_batch = acquisition.optimize_expected_improvement(
-                key_acq, surrogate, l_range, x_range, a_range, batch_size=batch_size
+                key_acq,
+                surrogate,
+                l_range,
+                x_range,
+                a_range,
+                batch_size=batch_size,
+                f_fixed=f_fixed,
             )
 
             # Evaluate and store each candidate, truncating the batch at the budget
