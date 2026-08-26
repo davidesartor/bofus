@@ -1,35 +1,32 @@
-from collections import defaultdict
-from jaxtyping import Array, Float
+import argparse
+import os
+from functools import partial
+
+import numpy as np
+
+from jaxtyping import Array, Float, Scalar
 import jax
 import jax.numpy as jnp
-
-import argparse
-import time
-import os
-import pickle
+import jax.random as jr
 
 from bofus import gp, kernels, rkhs, acquisition
 import targets
 import vlse
 
-RESULTS_DIR = os.environ.get("RESULTS_DIR", "results/neurips")
 
-VERBOSE = False
+def maybe_expand(fs: rkhs.RBFMixture, ys: Float[Array, "o"]):
+    """Expand the buffers if they are full."""
 
-RHO_RANGE = (0.05, 0.4)  # candidate lengthscales, same range the sweeps scan
+    def expand(x: Float[Array, "o ..."], fill: float) -> Float[Array, "n ..."]:
+        o, *rest = x.shape
+        n = 1 << o.bit_length()
+        return jnp.full((n, *rest), fill).at[:o].set(x)
 
-TARGET_FNS = {
-    "gramacylee": lambda: targets.Ridge(vlse.GramacyLee(normalized=True)),
-    "ackley": lambda: targets.Ridge(vlse.Ackley(d=2, normalized=True)),
-    "hartmann": lambda: targets.Ridge(vlse.Hartmann3(normalized=True)),
-    "rosenbrock": lambda: targets.Ridge(vlse.Rosenbrock(d=4, normalized=True)),
-    "michalewicz": lambda: targets.Ridge(vlse.Michalewicz(d=5, normalized=True)),
-    "pendulum": targets.Pendulum,
-    "pinwheel": targets.PinWheel,
-    "brachistochrone": targets.Brachistochrone,
-    "hopper": targets.HoppingRobot,
-    "mnist": targets.MNIST,
-}
+    if not jnp.isnan(ys).any():
+        fills = rkhs.RBFMixture(l=1.0, x=0.0, a=0.0)
+        fs = jax.tree.map(expand, fs, fills)
+        ys = expand(ys, jnp.nan)
+    return fs, ys
 
 
 def run(
@@ -38,103 +35,103 @@ def run(
     profile: kernels.Profile,
     m: int,
     initial_acquisitions: int,
-    n_acquisitions: int,
+    total_acquisitions: int,
+    l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
+    x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
+    y_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
+    verbose: bool = False,
 ) -> dict:
     """Sequential EI loop over the RKHS parametrization with a fixed basis size."""
-    key = jax.random.key(seed)
-    d, k = target_fn.d, getattr(target_fn, "m", 1)
-    timings: dict[str, float] = defaultdict(float)
+    key = jr.key(seed)
+    d, k = target_fn.d, target_fn.k
 
-    # candidate ranges: squared lengthscales, basis points in the unit box, values in [-1,1]
-    l_range = (jnp.asarray(RHO_RANGE[0] ** 2), jnp.asarray(RHO_RANGE[1] ** 2))
-    x_range = (jnp.asarray(0.0), jnp.asarray(1.0))
-    y_range = (jnp.asarray(-1.0), jnp.asarray(1.0))
-
-    # padded buffers: nan observations mark unused capacity
-    fs = rkhs.RBFMixture(
-        l=jnp.ones((0, k, m, d)), x=jnp.zeros((0, k, m, d)), a=jnp.zeros((0, k, m))
+    # initialize the observation buffers with the evaluated latin hypercube sample
+    key, key_init = jr.split(key)
+    fs = rkhs.RBFMixture.from_lhs(
+        key_init, (initial_acquisitions, k, m, d), l_range, x_range, y_range
     )
-    ys: Float[Array, "n"] = jnp.zeros(0)
-    n = 0
+    ys = [
+        target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
+    ]
+    ys = jnp.asarray(ys)
 
-    def record(new_fs: rkhs.RBFMixture) -> gp.GaussianProcess:
-        """Evaluate a batch of candidates, write them into the buffers, refit the surrogate."""
-        nonlocal fs, ys, n
-        timer = time.perf_counter()
-        rows = [jax.tree.map(lambda z: z[i], new_fs) for i in range(new_fs.a.shape[0])]
-        new_ys = jnp.array([target_fn(f) for f in rows])
-        timings["target_evaluation"] += time.perf_counter() - timer
-
-        timer = time.perf_counter()
-
-        # grow to the next power of two when out of capacity, so the fit rarely retraces
-        n_new = len(new_ys)
-        if n + n_new > len(ys):
-            N = 1 << (n + n_new - 1).bit_length()
-            pad = lambda z, fill: jnp.concat([z, jnp.full((N - len(ys), *z.shape[1:]), fill)])
-            fs = rkhs.RBFMixture(l=pad(fs.l, 1.0), x=pad(fs.x, 0.0), a=pad(fs.a, 0.0))
-            ys = pad(ys, jnp.nan)
-
-        fs = jax.tree.map(lambda z, w: z.at[n : n + n_new].set(w), fs, new_fs)
-        ys = ys.at[n : n + n_new].set(new_ys)
-        n += n_new
-
+    for i in range(initial_acquisitions, total_acquisitions):
+        # Fit the GP surrogate model to the current observations
         surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
-        timings["surrogate_fit"] += time.perf_counter() - timer
-        return surrogate
 
-    timer = time.perf_counter()
-    key, init_key = jax.random.split(key)
-    initial = rkhs.RBFMixture.from_lhs(
-        init_key, (initial_acquisitions, k, m, d), l_range, x_range, y_range
-    )
-    timings["acquisition"] += time.perf_counter() - timer
-    surrogate_model = record(initial)
-
-    for i in range(n_acquisitions):
-        timer = time.perf_counter()
-        key, acq_key = jax.random.split(key)
+        # Optimize the acquisition function to find the next point to evaluate
+        key, key_acq = jr.split(key)
         f = acquisition.optimize_expected_improvement(
-            acq_key, surrogate_model, l_range, x_range, y_range
+            key_acq, surrogate, l_range, x_range, y_range
         )
-        timings["acquisition"] += time.perf_counter() - timer
 
-        surrogate_model = record(jax.tree.map(lambda z: z[None], f))
-        if VERBOSE:
-            print(f"Iteration {i+1}: current = {ys[n-1]:.8f}, best = {jnp.nanmin(ys):.8f}\n")
+        # Evaluate the target function at the new point
+        y = target_fn(f)
+
+        # Add the new observation to the buffers, expanding if necessary
+        fs, ys = maybe_expand(fs, ys)
+        fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
+        ys = ys.at[i].set(y)
+
+        if verbose:
+            print(
+                f"Iteration {i + 1}: "
+                f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
+            )
 
     return dict(
-        observation_locations=jax.tree.map(lambda z: z[:n], fs),
-        observation_values=ys[:n],
-        **{f"{stage}_time": t for stage, t in timings.items()},
+        observation_locations=jax.tree.map(lambda z: z[:total_acquisitions], fs),
+        observation_values=ys[:total_acquisitions],
     )
 
 
-def main():
-    global VERBOSE
+if __name__ == "__main__":
+    vlse_targets = dict(
+        gramacylee=vlse.GramacyLee(normalized=True),
+        ackley=vlse.Ackley(d=2, normalized=True),
+        hartmann=vlse.Hartmann3(normalized=True),
+        rosenbrock=vlse.Rosenbrock(d=4, normalized=True),
+        michalewicz=vlse.Michalewicz(d=5, normalized=True),
+    )
+
+    target_fns = dict(
+        **{
+            f"{name}_ridge": partial(targets.Ridge, function)
+            for name, function in vlse_targets.items()
+        },
+        **{
+            f"{name}_projection": partial(targets.Projection, function)
+            for name, function in vlse_targets.items()
+        },
+        pendulum=targets.Pendulum,
+        pinwheel=targets.PinWheel,
+        brachistochrone=targets.Brachistochrone,
+        hopper=targets.HoppingRobot,
+        mnist=targets.MNIST,
+    )
+
+    profiles_options = dict(
+        rbf=kernels.rbf,
+        matern12=kernels.matern12,
+        matern32=kernels.matern32,
+        matern52=kernels.matern52,
+    )
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target_fn", choices=list(TARGET_FNS), required=True)
+    parser.add_argument("--target_fn", choices=list(target_fns.keys()), required=True)
     parser.add_argument(
-        "--profile", choices=["rbf", "matern52", "matern32", "matern12"], required=True
+        "--profile", choices=list(profiles_options.keys()), required=True
     )
     parser.add_argument("--seed", type=int, required=True)
-    # simulation parameters
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--initial_acquisitions", type=int, default=10)
     parser.add_argument("--n_acquisitions", type=int, default=100)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
 
-    VERBOSE = args.verbose
-
-    target_fn = TARGET_FNS[args.target_fn]()
-    profile = {
-        "rbf": kernels.rbf,
-        "matern12": kernels.matern12,
-        "matern32": kernels.matern32,
-        "matern52": kernels.matern52,
-    }[args.profile]
+    target_fn = target_fns[args.target_fn]()
+    profile = profiles_options[args.profile]
 
     results = run(
         seed=args.seed,
@@ -142,16 +139,14 @@ def main():
         profile=profile,
         m=args.m,
         initial_acquisitions=args.initial_acquisitions,
-        n_acquisitions=args.n_acquisitions,
+        total_acquisitions=args.initial_acquisitions + args.n_acquisitions,
+        verbose=args.verbose,
     )
 
-    save_dir = f"{RESULTS_DIR}/{args.target_fn}/ours_adaptive/{args.profile}"
+    save_dir = f"{args.results_dir}/{args.target_fn}/ours_adaptive/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
-    save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}"
-    pickle.dump(results, open(f"{save_path}.pkl", "wb"))
-    if VERBOSE:
-        print(f"Results saved to {save_path}.pkl")
-
-
-if __name__ == "__main__":
-    main()
+    save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
+    fs, ys = results["observation_locations"], results["observation_values"]
+    np.savez(save_path, l=fs.l, x=fs.x, a=fs.a, y=ys)
+    if args.verbose:
+        print(f"Results saved to {save_path}")
