@@ -1,4 +1,6 @@
+import functools
 import math
+import time
 from jaxtyping import Array, Bool, Float, Key
 
 import jax
@@ -43,3 +45,15 @@ def rescale(
 ) -> Float[Array, "..."]:
     """Map unit-cube points to the box [low, high]."""
     return low + x * (high - low)
+
+
+def timed(fn):
+    """Wrap a function to also return its wall time in seconds."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        timer = time.perf_counter()
+        out = fn(*args, **kwargs)
+        return out, time.perf_counter() - timer
+
+    return wrapper
