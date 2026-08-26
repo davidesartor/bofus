@@ -12,7 +12,6 @@ from bofus import kernels, rkhs
 Profile = vlse_base.TestFunction
 
 
-@eqx.filter_jit
 class Ridge:
     """Profile composed with d = profile.d random linear functionals g_i = b_i + int w_i f.
 
