@@ -51,6 +51,7 @@ def run(
     m: int,
     initial_acquisitions: int,
     total_acquisitions: int,
+    batch_size: int = 1,
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
@@ -70,29 +71,31 @@ def run(
     ]
     ys = jnp.asarray(ys)
 
-    for i in range(initial_acquisitions, total_acquisitions):
+    i = initial_acquisitions
+    while i < total_acquisitions:
         # Fit the GP surrogate model to the current observations
         surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
 
-        # Optimize the acquisition function to find the next point to evaluate
+        # Optimize the acquisition function to find the next batch to evaluate
         key, key_acq = jr.split(key)
-        f = acquisition.optimize_expected_improvement(
-            key_acq, surrogate, l_range, x_range, a_range
+        f_batch = acquisition.optimize_expected_improvement(
+            key_acq, surrogate, l_range, x_range, a_range, batch_size=batch_size
         )
 
-        # Evaluate the target function at the new point
-        y = target_fn(f)
+        # Evaluate and store each candidate, truncating the batch at the budget
+        for j in range(min(batch_size, total_acquisitions - i)):
+            f = jax.tree.map(lambda z: z[j], f_batch)
+            y = target_fn(f)
+            fs, ys = maybe_expand(fs, ys)
+            fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
+            ys = ys.at[i].set(y)
 
-        # Add the new observation to the buffers, expanding if necessary
-        fs, ys = maybe_expand(fs, ys)
-        fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
-        ys = ys.at[i].set(y)
-
-        if verbose:
-            print(
-                f"Iteration {i + 1}: "
-                f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
-            )
+            if verbose:
+                print(
+                    f"Iteration {i + 1}: "
+                    f"current = {ys[i]:.8f}, best = {jnp.nanmin(ys):.8f}\n"
+                )
+            i += 1
 
     return dict(
         observation_locations=jax.tree.map(lambda z: z[:total_acquisitions], fs),
@@ -135,6 +138,7 @@ if __name__ == "__main__":
     parser.add_argument("--m", type=int, default=8)
     parser.add_argument("--initial_acquisitions", type=int, default=10)
     parser.add_argument("--n_acquisitions", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
@@ -149,6 +153,7 @@ if __name__ == "__main__":
         m=args.m,
         initial_acquisitions=args.initial_acquisitions,
         total_acquisitions=args.initial_acquisitions + args.n_acquisitions,
+        batch_size=args.batch_size,
         verbose=args.verbose,
     )
 

@@ -56,6 +56,34 @@ def log_expected_improvement(
     return jnp.log(sigma) + log_h
 
 
+@jax.jit
+def q_log_expected_improvement(
+    mu: Float[Array, "... q"],
+    cov: Float[Array, "... q q"],
+    y_best: Float[Array, "..."],
+    eps: Float[Array, "s q"],
+    tau: float = 1e-2,
+) -> Float[Array, "..."]:
+    """Stable Monte Carlo batch log EI with smoothed relu and max (Ament et al. 2023)."""
+    L = jnp.linalg.cholesky(cov)
+    ys = mu[..., None, :] + jnp.einsum("sq,...rq->...sr", eps, L)
+
+    # log softplus_tau(y_best - y): smooth per-point log improvement
+    # sanitize inputs for the three branches to avoid NaNs and Infs in gradients
+    z = (jnp.asarray(y_best)[..., None, None] - ys) / tau
+    z_mid, z_high = z.clip(-30.0, 30.0), jnp.where(z > 30.0, z, 1.0)
+    log_softplus = jnp.where(
+        z > 30.0,
+        jnp.log(z_high),
+        jnp.where(z < -30.0, z, jnp.log(jax.nn.softplus(z_mid))),
+    )
+    log_imp = jnp.log(tau) + log_softplus
+
+    # smooth max over the batch, then average the samples in log space
+    log_max = tau * jax.nn.logsumexp(log_imp / tau, axis=-1)
+    return jax.nn.logsumexp(log_max, axis=-1) - jnp.log(len(eps))
+
+
 @eqx.filter_jit
 def optimize_expected_improvement(
     key: Key,
@@ -63,10 +91,12 @@ def optimize_expected_improvement(
     l_range: tuple[Scalar, Scalar],
     x_range: tuple[Scalar, Scalar],
     a_range: tuple[Scalar, Scalar],
+    batch_size: int = 1,
     multi_starts: int = 32,
     n_probes: int = 1024,
+    n_mc: int = 128,
 ) -> rkhs.RBFMixture:
-    """Maximise log EI over RBF mixtures, screening random probes then L-BFGS-B."""
+    """Maximise Monte Carlo batch EI over RBF mixtures, screening probes then L-BFGS-B."""
     _, k, m, d = surrogate.x.l.shape
     y_best = jnp.nanmin(surrogate.y)
 
@@ -77,38 +107,45 @@ def optimize_expected_improvement(
     bounds = tuple(zip(log_l_range, x_range, a_range))
 
     # probe the space via latin hypercube, squared lengthscales log-uniform
-    p = utils.latin_hypercube_sample(key, (n_probes, k, m, 2 * d + 1))
+    key_probes, key_mc = jax.random.split(key)
+    p = utils.latin_hypercube_sample(key_probes, (n_probes, k, m, 2 * d + 1))
     log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
     log_l = utils.rescale(log_l, *log_l_range)
     x = utils.rescale(x, *x_range)
     a = utils.rescale(a, *a_range)
     candidates = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
 
-    # keep the probes with the best log EI as multistart candidates
+    # screen probes by marginal log EI, stride the best into diverse start batches
     # add a mock axis so predict computes marginals only
     candidates = jax.tree.map(lambda z: z[:, None], candidates)
     mu, cov = jax.vmap(surrogate.predict)(candidates)
     mu, std = mu.squeeze(-1), cov.squeeze((-2, -1)) ** 0.5
     log_ei = log_expected_improvement(mu, std, y_best)
-    _, best = jax.lax.top_k(log_ei, multi_starts)
-    candidates = jax.tree.map(lambda z: z[best], candidates)
+    _, best = jax.lax.top_k(log_ei, multi_starts * batch_size)
+    best = best.reshape(batch_size, multi_starts).T
+    candidates = jax.tree.map(lambda z: z[best, 0], candidates)
 
     log_l, x, a = jnp.log(candidates.l), candidates.x, candidates.a
 
-    # box constrained L-BFGS-B
+    # box constrained L-BFGS-B, analytic log EI for a single point, MC batch log EI else
+    eps = jax.random.normal(key_mc, (n_mc, batch_size))
+
     def loss(lxa):
         log_l, x, a = lxa
         f = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
         mu, cov = surrogate.predict(f)
-        mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
-        return -log_expected_improvement(mu, sigma, y_best)
+        if batch_size == 1:
+            mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
+            return -log_expected_improvement(mu, sigma, y_best)
+        cov = cov + 1e-6 * jnp.trace(cov) / batch_size * jnp.eye(batch_size)
+        return -q_log_expected_improvement(mu, cov, y_best, eps)
 
     solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds)
     results = jax.vmap(solve)((log_l, x, a))
 
-    # return the candidate with the best log EI
+    # return the batch with the best Monte Carlo EI
     all_dead = ~jnp.any(jnp.isfinite(results.f))
     results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
     best = jnp.nanargmin(results.f)
-    log_l, x, a = jax.tree.map(lambda z: z[best, 0], results.x)
+    log_l, x, a = jax.tree.map(lambda z: z[best], results.x)
     return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
