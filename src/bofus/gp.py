@@ -1,12 +1,10 @@
 from typing import NamedTuple, Optional
-from jaxtyping import Array, Float, Key, Scalar
+from jaxtyping import Array, Float, Scalar
 
 import jax
 import jax.numpy as jnp
-import jax.random as jr
 import equinox as eqx
 from jax.scipy.linalg import cho_factor, cho_solve
-from einops import unpack
 from vlse import optim
 
 from . import kernels, rkhs, utils
@@ -44,7 +42,6 @@ def loglikelihood(
     # a nan observation marks padding, mask it out everywhere
     mask = jnp.isfinite(y)
     Koo = utils.mask_covariance(Koo, mask)
-    y = jnp.where(mask, y, 0.0)
     n = mask.sum()
 
     # factorize the covariance and compute its log determinant
@@ -105,43 +102,47 @@ class GaussianProcess(NamedTuple):
         f: rkhs.RBFMixture,  # assumed to be (o, k, m, d)
         y: Float[Array, "o"],
         *,
-        key: Key = jr.key(42),
-        n_starts: int = 8,
         profile: kernels.Profile = kernels.matern52,
-        l0_range: tuple[Scalar, Scalar] = (jnp.array(1e-2), jnp.array(1e0)),
         rho_range: tuple[Scalar, Scalar] = (jnp.array(1e-2), jnp.array(1e2)),
         nugget_range: tuple[Scalar, Scalar] = (jnp.array(1e-4), jnp.array(1e0)),
     ):
 
-        # clip l0 below the observed lengthscales so every pair fits the ambient rkhs
-        l0_range = (l0_range[0], l0_range[1].clip(max=f.l.min()))
-        log_l0_range = (jnp.log(l0_range[0]), jnp.log(l0_range[1]))
+        # padded slots hold arbitrary fill lengthscales, keep them out of the stats
+        _, k, m, _ = f.l.shape
+        observed = jnp.isfinite(y)[:, None, None, None]
+        l_min = jnp.where(observed, f.l, jnp.inf).min(axis=(0, 2))
+
+        log_l0_range = (jnp.log(l_min / 4), jnp.log(l_min))
         log_rho_range = (jnp.log(rho_range[0]), jnp.log(rho_range[1]))
         log_g_range = (jnp.log(nugget_range[0]), jnp.log(nugget_range[1]))
         bounds = tuple(zip(log_l0_range, log_rho_range, log_g_range))
 
-        # latin hypercube starts over the log-space box
-        _, k, _, d = f.l.shape
-        p = utils.latin_hypercube_sample(key, (n_starts, k * d + k + 1))
-        log_l0, log_rho, log_g = unpack(p, [[k, d], [k], []], "n *")
-        log_l0 = utils.rescale(log_l0, *log_l0_range)
-        log_rho = utils.rescale(log_rho, *log_rho_range)
-        log_g = utils.rescale(log_g, *log_g_range)
+        # init l0 at half the smallest observed lengthscale, rho and g mid-range
+        log_l0 = jnp.log(l_min / 2)
+        log_rho = jnp.full(k, (log_rho_range[0] + log_rho_range[1]) / 2)
+        log_g = (log_g_range[0] + log_g_range[1]) / 2
 
-        # multistart L-BFGS-B, keep the best run
+        # rho0 absorbs the ambient-norm prefactor at the typical observed lengthscale
+        log_l = jnp.where(observed, jnp.log(f.l), 0.0)
+        lbar = jnp.exp(log_l.sum(axis=(0, 2)) / (m * observed.sum()))
+        rho_prefactor = lambda l0: jnp.prod(jnp.sqrt(l0 * (2 * lbar - l0)) / lbar, -1)
+
+        # L-BFGS-B over the log-space box
         def mle_loss(log_params) -> Scalar:
-            l0, rho, g = jax.tree.map(jnp.exp, log_params)
+            log_l0, log_rho, log_g = log_params
+            l0, g = jnp.exp(log_l0), jnp.exp(log_g)
+            rho = rho_prefactor(l0) * jnp.exp(log_rho)
             Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
             return -loglikelihood(Koo, y)
 
-        solve = lambda log_params: optim.minimise(mle_loss, log_params, bounds=bounds)
-        results = jax.vmap(solve)((log_l0, log_rho, log_g))
+        result = optim.minimise(mle_loss, (log_l0, log_rho, log_g), bounds=bounds)
 
         # extract the optimal parameters
-        all_dead = ~jnp.any(jnp.isfinite(results.f))
-        results = eqx.error_if(results, all_dead, "all fits ended with non finite loss")
-        best = jnp.nanargmin(results.f)
-        l0, rho, g = jax.tree.map(lambda z: jnp.exp(z[best]), results.x)
+        dead = ~jnp.isfinite(result.f)
+        result = eqx.error_if(result, dead, "fit ended with non finite loss")
+        log_l0, log_rho, log_g = result.x
+        l0, g = jnp.exp(log_l0), jnp.exp(log_g)
+        rho = rho_prefactor(l0) * jnp.exp(log_rho)
 
         # infer the remaining parameters
         Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
