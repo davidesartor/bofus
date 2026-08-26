@@ -1,130 +1,35 @@
-from typing import Callable
-from functools import lru_cache
-from jaxtyping import Array, Float, Scalar
+from jaxtyping import Array, Float, Key, Scalar
+
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 import equinox as eqx
-import numpy as np
 import vlse.optim
 
-jax.config.update("jax_enable_x64", True)
-EPS = float(jnp.sqrt(jnp.finfo(float).eps))
+from . import rkhs, gp, utils
 
 
-@lru_cache(maxsize=None)
-def autodiff_view(loss_fn: Callable, static_args) -> Callable:
-    """Scalar view of a (value, gradient) loss, whose autodiff gradient is the returned one.
-
-    The natural gradient losses return preconditioned gradients, so the optimizer must
-    take the gradient the loss hands back instead of differentiating the value.
-    """
-
-    @jax.custom_jvp
-    def scalar_loss(p, dynamic_args) -> Scalar:
-        return loss_fn(p, *eqx.combine(dynamic_args, static_args))[0]
-
-    @scalar_loss.defjvp
-    def scalar_loss_jvp(primals, tangents):
-        p, dynamic_args = primals
-        val, grad = loss_fn(p, *eqx.combine(dynamic_args, static_args))
-        return val, jnp.vdot(grad, tangents[0])
-
-    return scalar_loss
-
-
-@eqx.filter_jit
-def refine_candidates(
-    scalar_loss: Callable,
-    candidates: Float[Array, "n p"],
-    dynamic_args: tuple,
-    in_axes: tuple,
-    maxiter: int,
-    ftol: float,
-    gtol: float,
-) -> tuple[Float[Array, "n p"], Float[Array, "n"]]:
-    """Refine every candidate with box constrained L-BFGS-B, all in one dispatch."""
-    solve = lambda c, args: vlse.optim.minimise(
-        scalar_loss,
-        c,
-        bounds=(jnp.zeros_like(c), jnp.ones_like(c)),
-        args=(args,),
-        tol=gtol,
-        ftol=ftol,
-        max_iterations=maxiter,
-    )
-    states = jax.vmap(solve, in_axes=(0, in_axes))(candidates, dynamic_args)
-    return states.x, states.f
-
-
-def optimize_lhs_candidates(
-    acquisition_loss: Callable,
-    candidates: Float[Array, "n p"],
-    extra_args: list | None = None,
-    loss_args: tuple = (),
-    max_restarts: int = 0,
-    screening_loss: Callable | None = None,
-    optimizer_options: dict = dict(maxiter=100, ftol=EPS, gtol=0.0),
-) -> tuple[Float[Array, "p"], Array | None]:
-    """Screen the candidates, then refine the best ones with L-BFGS-B in one dispatch.
-
-    acquisition_loss(c, [extra,] *loss_args) returns (value, gradient); it must be a
-    module level function so the compiled refinement is reused across calls.
-    extra_args stack per-candidate arguments, loss_args are shared by every candidate.
-    screening_loss is an already batched value-only loss, taking every candidate at once.
-    """
-    candidates = jnp.asarray(candidates)
-    extras = (
-        None if extra_args is None or len(extra_args) == 0 else jnp.asarray(extra_args)
-    )
-
-    # only keep the best initial candidates
-    if screening_loss is None:
-        losses = [
-            (
-                acquisition_loss(c, *loss_args)[0]
-                if extras is None
-                else acquisition_loss(c, e, *loss_args)[0]
-            )
-            for c, e in zip(candidates, candidates if extras is None else extras)
-        ]
-    elif extras is None:
-        losses = screening_loss(candidates)
-    else:
-        losses = screening_loss(candidates, extras)
-    best = np.argsort(losses)[:max_restarts]
-    candidates = candidates[best]
-    extras = None if extras is None else extras[best]
-
-    # arrays are traced, everything else keys the compilation cache
-    full_args = loss_args if extras is None else (extras, *loss_args)
-    dynamic_args, static_args = eqx.partition(full_args, eqx.is_array)
-    scalar_loss = autodiff_view(acquisition_loss, static_args)
-    in_axes = ((0,) if extras is not None else ()) + (None,) * len(loss_args)
-
-    xs, fs = refine_candidates(
-        scalar_loss,
-        candidates,
-        dynamic_args,
-        in_axes,
-        optimizer_options["maxiter"],
-        optimizer_options["ftol"],
-        optimizer_options["gtol"],
-    )
-
-    # a restart whose linesearch died on a non finite loss must not win the argmin
-    best = jnp.argmin(jnp.where(jnp.isnan(fs), jnp.inf, fs))
-    return xs[best], (None if extras is None else extras[best])
-
-def upper_confidence_bound(mu: Scalar, sigma: Scalar, beta: Scalar) -> Scalar:
+@jax.jit
+def upper_confidence_bound(
+    mu: Float[Array, "..."],
+    sigma: Float[Array, "..."],
+    beta: Float[Array, "..."],
+) -> Float[Array, "..."]:
     return -mu + jnp.sqrt(beta) * sigma
 
-def log_expected_improvement(mu: Scalar, sigma: Scalar, y_best: Scalar) -> Scalar:
+
+@jax.jit
+def log_expected_improvement(
+    mu: Float[Array, "..."],
+    sigma: Float[Array, "..."],
+    y_best: Float[Array, "..."],
+) -> Float[Array, "..."]:
     """Stable log EI: log(sigma) + log(pdf(z) + z * cdf(z)) (Ament et al. 2023)."""
 
     # sanitize inputs for the three branches to avoid NaNs and Infs in gradients
     z = (y_best - mu) / sigma
-    upper, lower = z > -1, z < -1 / jnp.sqrt(EPS)
+    eps = jnp.sqrt(jnp.finfo(z.dtype).eps)
+    upper, lower = z > -1, z < -1 / jnp.sqrt(eps)
 
     # branch1 (z > -1): direct evaluation
     z1 = jnp.where(upper, z, 0.0)
@@ -144,11 +49,68 @@ def log_expected_improvement(mu: Scalar, sigma: Scalar, y_best: Scalar) -> Scala
     )
 
     # branch3 (z < -1/sqrt(EPS)): asymptotic expansion
-    z3 = jnp.where(lower, z, -2.0 / EPS)
+    z3 = jnp.where(lower, z, -2.0 / eps)
     log_h3 = -(z3**2) / 2 - jnp.log(2 * jnp.pi) / 2 - 2 * jnp.log(-z3)
 
     log_h = jnp.where(upper, log_h1, jnp.where(lower, log_h3, log_h2))
     return jnp.log(sigma) + log_h
 
 
+@eqx.filter_jit
+def optimize_expected_improvement(
+    key: Key,
+    surrogate: gp.GaussianProcess,
+    l_range: tuple[Scalar, Scalar],
+    x_range: tuple[Scalar, Scalar],
+    y_range: tuple[Scalar, Scalar],
+    multi_starts: int = 128,
+    n_probes: int = 1024,
+) -> rkhs.RBFMixture:
+    """Maximise log EI over RBF mixtures, screening random probes then L-BFGS-B."""
+    _, k, m, d = surrogate.x.l.shape
+    y_best = jnp.nanmin(surrogate.y)
 
+    # the ambient inner product needs l + l_obs - l0 > 0, so clip the lower end
+    l_floor = (surrogate.l0.max() - surrogate.x.l.min()) * 1.01
+    l_range = (l_range[0].clip(min=l_floor), l_range[1])
+    log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
+    bounds = tuple(zip(log_l_range, x_range, y_range))
+
+    # probe the space via latin hypercube, squared lengthscales log-uniform
+    p = utils.latin_hypercube_sample(key, (n_probes, k, m, 2 * d + 1))
+    log_l, x, y = jnp.split(p, [d, 2 * d], axis=-1)
+    log_l = utils.rescale(log_l, *log_l_range)
+    x = utils.rescale(x, *x_range)
+    y = utils.rescale(y, *y_range)
+    candidates = rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y.squeeze(-1))
+
+    # keep the probes with the best log EI as multistart candidates
+    # add a mock axis so predict computes marginals only
+    candidates = jax.tree.map(lambda z: z[:, None], candidates)
+    mu, cov = jax.vmap(surrogate.predict)(candidates)
+    mu, std = mu.squeeze(-1), cov.squeeze((-2, -1)) ** 0.5
+    log_ei = log_expected_improvement(mu, std, y_best)
+    _, best = jax.lax.top_k(log_ei, multi_starts)
+    candidates = jax.tree.map(lambda z: z[best], candidates)
+
+    # vmap so each candidate and output computes its own y only
+    log_l, x = jnp.log(candidates.l), candidates.x
+    y = jax.vmap(jax.vmap(jax.vmap(lambda f: f(f.x))))(candidates)
+
+    # box constrained L-BFGS-B
+    def loss(lxy):
+        log_l, x, y = lxy
+        f = rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y)
+        mu, cov = surrogate.predict(f)
+        mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
+        return -log_expected_improvement(mu, sigma, y_best)
+
+    solve = lambda lxy: vlse.optim.minimise(loss, lxy, bounds=bounds)
+    results = jax.vmap(solve)((log_l, x, y))
+
+    # return the candidate with the best log EI
+    all_dead = ~jnp.any(jnp.isfinite(results.f))
+    results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
+    best = jnp.nanargmin(results.f)
+    log_l, x, y = jax.tree.map(lambda z: z[best, 0], results.x)
+    return rkhs.RBFMixture.from_lxy(jnp.exp(log_l), x, y)
