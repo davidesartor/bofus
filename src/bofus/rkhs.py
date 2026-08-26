@@ -45,6 +45,13 @@ class RBFMixture(NamedTuple):
         a = jnp.zeros((*b, m)).at[..., :m0].set(self.a)
         return self._replace(l=l, x=x, a=a)
 
+    def split(self) -> Self:
+        """Split every atom in two with half amplitude, leaving the function unchanged."""
+        l = jnp.concatenate([self.l, self.l], axis=-2)
+        x = jnp.concatenate([self.x, self.x], axis=-2)
+        a = jnp.concatenate([self.a / 2, self.a / 2], axis=-1)
+        return self._replace(l=l, x=x, a=a)
+
 
 @eqx.filter_jit
 def rbf_inner(

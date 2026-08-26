@@ -147,7 +147,7 @@
         <label class="toggle"><input type="checkbox" id="trails" checked>history trails</label>
       </div>
       <svg id="fn-svg" viewBox="0 0 640 420" role="img" aria-label="Candidate function versus target"></svg>
-      <div class="hint">Triangles on the baseline mark the candidate's basis centers (all within the sampling domain); stem height tracks amplitude, dashed cap width tracks lengthscale — wide caps can spill past the domain even though centers stay inside.</div>
+      <div class="hint">Dots mark the candidate's basis atoms at (center, amplitude); the dashed bar through each dot spans its lengthscale.</div>
     </div>
     <div class="panel">
       <h2>Convergence</h2>
@@ -306,20 +306,14 @@ const fnDotP = el("circle", { r: 4, fill: "var(--ink-2)", stroke: "var(--surface
 function drawStems(i) {
   stemsG.innerHTML = "";
   const cs = DATA.centers[i], as = DATA.amplitudes[i], ls = DATA.lengthscales[i];
-  const aMax = Math.max(...as.map(Math.abs), 1e-9);
   const pxPerT = (FW - FM.l - FM.r) / (tMax - tMin);
   for (let j = 0; j < cs.length; j++) {
-    if (cs[j] < tMin || cs[j] > tMax) continue;
-    const x = fx(cs[j]);
-    const h = 22 * Math.abs(as[j]) / aMax;
-    const y0 = FH - FM.b, y1 = as[j] >= 0 ? y0 - h : y0 + Math.min(h, 22);
-    el("line", { x1: x, x2: x, y1: y0, y2: y1, stroke: "var(--candidate)", "stroke-width": 2, opacity: 0.45 }, stemsG);
+    if (cs[j] < tMin || cs[j] > tMax || as[j] === 0) continue;
+    const x = fx(cs[j]), y = fy(as[j]);
+    if (y < FM.t || y > FH - FM.b) continue;
     const halfw = Math.min(0.5 * Math.sqrt(ls[j]) * pxPerT, 40);
-    el("line", { x1: x - halfw, x2: x + halfw, y1: y1, y2: y1, stroke: "var(--candidate)", "stroke-width": 1.5, "stroke-dasharray": "3 2", opacity: 0.3 }, stemsG);
-    const cyDot = fy(CURVES[i][Math.round((cs[j] - tMin) / (tMax - tMin) * (T.length - 1))]);
-    if (cyDot >= FM.t && cyDot <= FH - FM.b)
-      el("circle", { cx: x, cy: cyDot, r: 3, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 1.5 }, stemsG);
-    el("path", { d: `M ${x} ${y0 - 5} L ${x - 4.5} ${y0 + 4} L ${x + 4.5} ${y0 + 4} Z`, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 1 }, stemsG);
+    el("line", { x1: x - halfw, x2: x + halfw, y1: y, y2: y, stroke: "var(--candidate)", "stroke-width": 1.5, "stroke-dasharray": "3 2", opacity: 0.3 }, stemsG);
+    el("circle", { cx: x, cy: y, r: 4, fill: "var(--candidate)", stroke: "var(--surface)", "stroke-width": 1.5 }, stemsG);
   }
 }
 

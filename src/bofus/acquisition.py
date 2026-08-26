@@ -3,6 +3,7 @@ from jaxtyping import Array, Float, Key, Scalar
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
+import jax.random as jr
 import equinox as eqx
 import vlse.optim
 
@@ -95,30 +96,15 @@ def optimize_expected_improvement(
     multi_starts: int = 32,
     n_probes: int = 1024,
     n_mc: int = 128,
-    f_fixed: rkhs.RBFMixture | None = None,
 ) -> rkhs.RBFMixture:
     """Maximise Monte Carlo batch EI over RBF mixtures, screening probes then L-BFGS-B.
 
-    With f_fixed (k, m_fixed, d), those atoms prefix every candidate and only the
-    remaining m - m_fixed atoms are optimized.
+    Probes are sampled from a Gaussian mixture with one component per past
+    observation, weighted by softmax of -y, spread set by the median
+    nearest-neighbour distance between observations in unit-cube coordinates.
     """
     _, k, m, d = surrogate.x.l.shape
     y_best = jnp.nanmin(surrogate.y)
-
-    m_free = m if f_fixed is None else m - f_fixed.a.shape[-1]
-
-    def assemble(free: rkhs.RBFMixture) -> rkhs.RBFMixture:
-        if f_fixed is None:
-            return free
-        batch = free.a.shape[:-2]
-        cat = lambda z, w, ax: jnp.concatenate(
-            [jnp.broadcast_to(z, (*batch, *z.shape)), w], axis=ax
-        )
-        return rkhs.RBFMixture(
-            l=cat(f_fixed.l, free.l, -2),
-            x=cat(f_fixed.x, free.x, -2),
-            a=cat(f_fixed.a, free.a, -1),
-        )
 
     # ambient inner products need l + l_obs - l0 > 0 and 2l - l0 > 0, so clip the lower end
     l_floor = jnp.maximum(surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2) * 1.01
@@ -126,9 +112,33 @@ def optimize_expected_improvement(
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
     bounds = tuple(zip(log_l_range, x_range, a_range))
 
-    # probe the space via latin hypercube, squared lengthscales log-uniform
-    key_probes, key_mc = jax.random.split(key)
-    p = utils.latin_hypercube_sample(key_probes, (n_probes, k, m_free, 2 * d + 1))
+    # past observations in unit-cube coordinates, one Gaussian mixture component each
+    n = surrogate.y.shape[0]
+    dim = k * m * (2 * d + 1)
+    to_unit = lambda z, lo, hi: (z - lo) / (hi - lo)
+    obs = jnp.concatenate(
+        [
+            to_unit(jnp.log(surrogate.x.l), *log_l_range),
+            to_unit(surrogate.x.x, *x_range),
+            to_unit(surrogate.x.a, *a_range)[..., None],
+        ],
+        axis=-1,
+    ).reshape(n, dim)
+
+    # component weights from softmax of standardized -y, spread from nearest-neighbour distance
+    mask = jnp.isfinite(surrogate.y)
+    pair = mask[:, None] & mask[None, :] & ~jnp.eye(n, dtype=bool)
+    dist = jnp.linalg.norm(obs[:, None] - obs[None, :], axis=-1)
+    nearest = jnp.min(jnp.where(pair, dist, jnp.inf), axis=-1)
+    sigma = jnp.nanmedian(jnp.where(mask, nearest, jnp.nan)) / jnp.sqrt(dim)
+    scale = jnp.maximum(jnp.nanstd(surrogate.y), jnp.finfo(surrogate.y.dtype).eps)
+    logits = jnp.where(mask, (y_best - surrogate.y) / scale, -jnp.inf)
+
+    # probe by sampling the mixture, clipped back into the box
+    key_comp, key_eps, key_mc = jr.split(key, 3)
+    comp = jr.categorical(key_comp, logits, shape=(n_probes,))
+    p = obs[comp] + sigma * jr.normal(key_eps, (n_probes, dim))
+    p = p.clip(0.0, 1.0).reshape(n_probes, k, m, 2 * d + 1)
     log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
     log_l = utils.rescale(log_l, *log_l_range)
     x = utils.rescale(x, *x_range)
@@ -138,7 +148,7 @@ def optimize_expected_improvement(
     # screen probes by marginal log EI, stride the best into diverse start batches
     # add a mock axis so predict computes marginals only
     candidates = jax.tree.map(lambda z: z[:, None], candidates)
-    mu, cov = jax.vmap(surrogate.predict)(assemble(candidates))
+    mu, cov = jax.vmap(surrogate.predict)(candidates)
     mu, std = mu.squeeze(-1), cov.squeeze((-2, -1)) ** 0.5
     log_ei = log_expected_improvement(mu, std, y_best)
     _, best = jax.lax.top_k(log_ei, multi_starts * batch_size)
@@ -148,11 +158,11 @@ def optimize_expected_improvement(
     log_l, x, a = jnp.log(candidates.l), candidates.x, candidates.a
 
     # box constrained L-BFGS-B, analytic log EI for a single point, MC batch log EI else
-    eps = jax.random.normal(key_mc, (n_mc, batch_size))
+    eps = jr.normal(key_mc, (n_mc, batch_size))
 
     def loss(lxa):
         log_l, x, a = lxa
-        f = assemble(rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a))
+        f = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
         mu, cov = surrogate.predict(f)
         if batch_size == 1:
             mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
@@ -168,4 +178,4 @@ def optimize_expected_improvement(
     results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
     best = jnp.nanargmin(results.f)
     log_l, x, a = jax.tree.map(lambda z: z[best], results.x)
-    return assemble(rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a))
+    return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)

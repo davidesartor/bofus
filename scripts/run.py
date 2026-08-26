@@ -72,16 +72,10 @@ def run(
 
     i = initial_acquisitions
     for m_stage in schedule:
-        # freeze the previous stage's best as the fixed prefix for new candidates
-        f_fixed = (
-            None
-            if m_stage == schedule[0]
-            else jax.tree.map(lambda z: z[jnp.nanargmin(ys)], fs)
-        )
-
         # grow both buffers at the stage boundary, so each stage compiles once
         stage_end = 2 * i
-        fs, ys = expand_to(fs.pad_to(m_stage), ys, stage_end)
+        fs = fs if m_stage == fs.l.shape[-2] else fs.split()
+        fs, ys = expand_to(fs, ys, stage_end)
         while i < stage_end:
             # Fit the GP surrogate model to the current observations
             surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
@@ -95,7 +89,6 @@ def run(
                 x_range,
                 a_range,
                 batch_size=batch_size,
-                f_fixed=f_fixed,
             )
 
             # Evaluate and store each candidate, truncating the batch at the budget
