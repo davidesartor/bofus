@@ -1,4 +1,4 @@
-from jaxtyping import Array, Float, Key, Scalar
+from jaxtyping import Array, Float, Int, Key, Scalar
 
 import jax
 import jax.numpy as jnp
@@ -86,6 +86,24 @@ def q_log_expected_improvement(
 
 
 @eqx.filter_jit
+def boltzmann_select(
+    key: Key,
+    values: Float[Array, "n"],
+    n: int,
+    eta: float = 2.0,
+) -> Int[Array, "n"]:
+    """Sample n distinct indices with weights exp(eta * standardized values), keeping the argmax."""
+    finite = jnp.isfinite(values)
+    v = jnp.where(finite, values, jnp.nan)
+    z = (v - jnp.nanmean(v)) / jnp.maximum(jnp.nanstd(v), jnp.finfo(v.dtype).eps)
+    logits = jnp.where(finite, eta * z, -jnp.inf).at[jnp.nanargmax(v)].set(jnp.inf)
+
+    # gumbel top-k is sampling without replacement
+    _, idx = jax.lax.top_k(logits + jr.gumbel(key, values.shape), n)
+    return idx
+
+
+@eqx.filter_jit
 def optimize_expected_improvement(
     key: Key,
     surrogate: gp.GaussianProcess,
@@ -96,15 +114,19 @@ def optimize_expected_improvement(
     multi_starts: int = 32,
     n_probes: int = 1024,
     n_mc: int = 128,
+    n_best: int = 4,
+    sigma_around_best: float = 1e-2,
+    eta: float = 2.0,
 ) -> rkhs.RBFMixture:
     """Maximise Monte Carlo batch EI over RBF mixtures, screening probes then L-BFGS-B.
 
-    Probes are sampled from a Gaussian mixture with one component per past
-    observation, weighted by softmax of -y, spread set by the median
-    nearest-neighbour distance between observations in unit-cube coordinates.
+    Half the probes cover the box by latin hypercube, half perturb the n_best observed
+    points by sigma_around_best in unit-cube coordinates. Starts are Boltzmann
+    sampled from marginal log EI at temperature eta, the incumbent is the best
+    posterior mean over the observations.
     """
     _, k, m, d = surrogate.x.l.shape
-    y_best = jnp.nanmin(surrogate.y)
+    mask = jnp.isfinite(surrogate.y)
 
     # ambient inner products need l + l_obs - l0 > 0 and 2l - l0 > 0, so clip the lower end
     l_floor = jnp.maximum(surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2) * 1.01
@@ -112,48 +134,51 @@ def optimize_expected_improvement(
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
     bounds = tuple(zip(log_l_range, x_range, a_range))
 
-    # past observations in unit-cube coordinates, one Gaussian mixture component each
-    n = surrogate.y.shape[0]
-    dim = k * m * (2 * d + 1)
-    to_unit = lambda z, lo, hi: (z - lo) / (hi - lo)
-    obs = jnp.concatenate(
-        [
-            to_unit(jnp.log(surrogate.x.l), *log_l_range),
-            to_unit(surrogate.x.x, *x_range),
-            to_unit(surrogate.x.a, *a_range)[..., None],
-        ],
-        axis=-1,
-    ).reshape(n, dim)
+    def marginals(f: rkhs.RBFMixture) -> tuple[Float[Array, "n"], Float[Array, "n"]]:
+        """Posterior mean and std of each function on its own."""
+        f = jax.tree.map(lambda z: z[:, None], f)
+        mu, cov = jax.vmap(surrogate.predict)(f)
+        return mu.squeeze(-1), cov.squeeze((-2, -1)) ** 0.5
 
-    # component weights from softmax of standardized -y, spread from nearest-neighbour distance
-    mask = jnp.isfinite(surrogate.y)
-    pair = mask[:, None] & mask[None, :] & ~jnp.eye(n, dtype=bool)
-    dist = jnp.linalg.norm(obs[:, None] - obs[None, :], axis=-1)
-    nearest = jnp.min(jnp.where(pair, dist, jnp.inf), axis=-1)
-    sigma = jnp.nanmedian(jnp.where(mask, nearest, jnp.nan)) / jnp.sqrt(dim)
-    scale = jnp.maximum(jnp.nanstd(surrogate.y), jnp.finfo(surrogate.y.dtype).eps)
-    logits = jnp.where(mask, (y_best - surrogate.y) / scale, -jnp.inf)
+    def to_unit(f: rkhs.RBFMixture) -> Float[Array, "n k m p"]:
+        unit = lambda z, lo, hi: (z - lo) / (hi - lo)
+        return jnp.concatenate(
+            [
+                unit(jnp.log(f.l), *log_l_range),
+                unit(f.x, *x_range),
+                unit(f.a, *a_range)[..., None],
+            ],
+            axis=-1,
+        )
 
-    # probe by sampling the mixture, clipped back into the box
-    key_comp, key_eps, key_mc = jr.split(key, 3)
-    comp = jr.categorical(key_comp, logits, shape=(n_probes,))
-    p = obs[comp] + sigma * jr.normal(key_eps, (n_probes, dim))
-    p = p.clip(0.0, 1.0).reshape(n_probes, k, m, 2 * d + 1)
-    log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
-    log_l = utils.rescale(log_l, *log_l_range)
-    x = utils.rescale(x, *x_range)
-    a = utils.rescale(a, *a_range)
-    candidates = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
+    def from_unit(p: Float[Array, "n k m p"]) -> rkhs.RBFMixture:
+        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
+        log_l = utils.rescale(log_l, *log_l_range)
+        x = utils.rescale(x, *x_range)
+        a = utils.rescale(a, *a_range)
+        return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
 
-    # screen probes by marginal log EI, stride the best into diverse start batches
-    # add a mock axis so predict computes marginals only
-    candidates = jax.tree.map(lambda z: z[:, None], candidates)
-    mu, cov = jax.vmap(surrogate.predict)(candidates)
-    mu, std = mu.squeeze(-1), cov.squeeze((-2, -1)) ** 0.5
-    log_ei = log_expected_improvement(mu, std, y_best)
-    _, best = jax.lax.top_k(log_ei, multi_starts * batch_size)
-    best = best.reshape(batch_size, multi_starts).T
-    candidates = jax.tree.map(lambda z: z[best, 0], candidates)
+    # incumbent as the best posterior mean over the observations, consistent with the nugget
+    mu_obs, _ = marginals(surrogate.x)
+    y_best = jnp.where(mask, mu_obs, jnp.inf).min()
+
+    # half the probes cover the box, half perturb the n_best observed points
+    key_cover, key_center, key_perturb, key_select, key_mc = jr.split(key, 5)
+    n_cover = n_probes // 2
+    n_around = n_probes - n_cover
+    p_cover = utils.latin_hypercube_sample(key_cover, (n_cover, k, m, 2 * d + 1))
+    order = jnp.argsort(jnp.where(mask, surrogate.y, jnp.inf))
+    n_top = jnp.minimum(n_best, mask.sum())
+    center = order[jr.randint(key_center, (n_around,), 0, n_top)]
+    noise = sigma_around_best * jr.normal(key_perturb, (n_around, k, m, 2 * d + 1))
+    p_around = (to_unit(surrogate.x)[center] + noise).clip(0.0, 1.0)
+    candidates = from_unit(jnp.concatenate([p_cover, p_around]))
+
+    # screen probes by marginal log EI, Boltzmann sample the starts, stride into batches
+    log_ei = log_expected_improvement(*marginals(candidates), y_best)
+    starts = boltzmann_select(key_select, log_ei, multi_starts * batch_size, eta)
+    starts = starts.reshape(batch_size, multi_starts).T
+    candidates = jax.tree.map(lambda z: z[starts], candidates)
 
     log_l, x, a = jnp.log(candidates.l), candidates.x, candidates.a
 
