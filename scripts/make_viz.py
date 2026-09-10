@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from targets import Brachistochrone, Projection
 from vlse import GramacyLee
 
-TEMPLATE = Path(__file__).parent / "viz_template.html"
+TEMPLATE = Path(__file__).parent / "templates" / "run_viz.html"
 
 LABELS = dict(
     gramacylee_projection=dict(
@@ -94,7 +94,7 @@ def doubling_stages(n, initial_acquisitions):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("npz_path")
-    parser.add_argument("out_path")
+    parser.add_argument("--out", help="Output html, default plots/{target}_{npz stem}.html")
     parser.add_argument("--target", choices=list(LABELS.keys()))
     parser.add_argument("--initial_acquisitions", type=int, default=8)
     parser.add_argument("--grid_points", type=int, default=384)
@@ -145,8 +145,10 @@ def main():
         html = html.replace("{{" + key + "}}", value)
     html = html.replace("/*__DATA__*/;", payload + ";")
     html = html.replace("/*__META__*/;", meta + ";")
-    Path(args.out_path).write_text(html)
-    print(f"wrote {args.out_path}: {n} iterations, best {np.nanmin(y):.5f}")
+    out = Path(args.out or f"plots/{target}_{Path(args.npz_path).stem}.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html)
+    print(f"wrote {out}: {n} iterations, best {np.nanmin(y):.5f}")
 
 
 if __name__ == "__main__":

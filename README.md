@@ -7,18 +7,17 @@ We propose a method for Functional Bayesian Optimization (FBO) that searches a s
 
 ```
 .
-├── run.py               # Main entry point: run a single experiment
-├── sweep.sh             # SLURM sweep script: launches all experiments
-├── summary.py           # Aggregate raw results into parquet tables
-├── plots.py             # Generate all figures and tables from the parquet tables
+├── scripts/
+│   ├── run.py                    # Run a single experiment, writes results/{target}/.../seed_{seed}_m_{m}.npz
+│   ├── make_viz.py               # Standalone HTML visualization of one run npz
+│   ├── make_whip_dashboard.py    # Plotly dashboard over the whip runs (pose cache in plots/.cache/)
+│   └── templates/                # HTML templates filled by the two scripts above
 ├── src/
-│   ├── gp.py            # Gaussian process surrogate models
-│   ├── rkhs.py          # RKHS function representations
-│   ├── kernels.py       # Kernel functions (RBF, Matérn)
-│   ├── acquisition.py   # Acquisition functions and optimization
-│   └── targets/         # Functional benchmarks (ridge, sinc) and real-world tasks
-├── results/             # Experiment outputs (see below)
-└── plots/               # Generated figures
+│   ├── bofus/                    # GP surrogate, RKHS mixtures, kernels, acquisition
+│   └── targets/                  # Functional benchmarks (ridge, projection) and real-world tasks
+├── tests/
+├── results/                      # Run outputs; results/neurips/ is the frozen paper archive
+└── plots/                        # Generated html figures
 ```
 
 ## Installation

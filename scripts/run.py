@@ -162,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--fixed_m", action="store_true", help="Keep the basis size fixed at m.")
-    parser.add_argument("--results_dir", default="results/neurips")
+    parser.add_argument("--results_dir", default="results")
     args = parser.parse_args()
 
     target_fn = target_fns[args.target_fn]()
