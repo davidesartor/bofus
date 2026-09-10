@@ -71,17 +71,21 @@ def run(
     ys = jnp.asarray(ys)
 
     i = initial_acquisitions
+    surrogate = None
     for m_stage in schedule:
         # grow both buffers at the stage boundary, so each stage compiles once
         stage_end = 2 * i
         fs = fs if m_stage == fs.l.shape[-2] else fs.split()
         fs, ys = expand_to(fs, ys, stage_end)
         while i < stage_end:
-            # Fit the GP surrogate model to the current observations
-            surrogate = gp.GaussianProcess.fit(fs, ys, profile=profile)
+            # Fit the GP surrogate model, warm started from the previous fit
+            key, key_fit, key_acq = jr.split(key, 3)
+            init = None if surrogate is None else (surrogate.l0, surrogate.rho, surrogate.g)
+            surrogate = gp.GaussianProcess.fit(
+                fs, ys, profile=profile, init=init, key=key_fit
+            )
 
             # Optimize the acquisition function to find the next batch to evaluate
-            key, key_acq = jr.split(key)
             f_batch = acquisition.optimize_expected_improvement(
                 key_acq,
                 surrogate,

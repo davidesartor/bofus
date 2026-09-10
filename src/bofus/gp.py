@@ -1,8 +1,9 @@
 from typing import NamedTuple, Optional
-from jaxtyping import Array, Float, Scalar
+from jaxtyping import Array, Float, Key, Scalar
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import equinox as eqx
 from jax.scipy.linalg import cho_factor, cho_solve
 from vlse import optim
@@ -105,7 +106,15 @@ class GaussianProcess(NamedTuple):
         profile: kernels.Profile = kernels.matern52,
         rho_range: tuple[Scalar, Scalar] = (jnp.array(1e-2), jnp.array(1e2)),
         nugget_range: tuple[Scalar, Scalar] = (jnp.array(1e-4), jnp.array(1e0)),
+        init: Optional[tuple[Float[Array, "k d"], Float[Array, "k"], Scalar]] = None,
+        key: Optional[Key] = None,
+        n_restarts: int = 2,
     ):
+        """Maximum likelihood fit over (l0, rho, g), best of several L-BFGS-B starts.
+
+        Starts are the mid-box default, the previous fit's (l0, rho, g) as init if
+        given, and n_restarts uniform draws over the log box when key is given.
+        """
 
         # padded slots hold arbitrary fill lengthscales, keep them out of the stats
         _, k, m, _ = f.l.shape
@@ -135,12 +144,29 @@ class GaussianProcess(NamedTuple):
             Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
             return -loglikelihood(Koo, y)
 
-        result = optim.minimise(mle_loss, (log_l0, log_rho, log_g), bounds=bounds)
+        starts = [(log_l0, log_rho, log_g)]
+        if init is not None:
+            l0_prev, rho_prev, g_prev = init
+            log_rho_prev = jnp.log(rho_prev / rho_prefactor(l0_prev))
+            starts.append((jnp.log(l0_prev), log_rho_prev, jnp.log(g_prev)))
+        starts = jax.tree.map(lambda *z: jnp.stack(z), *starts)
+        if key is not None:
+            lower, upper = bounds
+            keys = jr.split(key, 3)
+            uniform = lambda z, lo, hi, k: jr.uniform(
+                k, (n_restarts, *z.shape[1:]), minval=lo, maxval=hi
+            )
+            random = jax.tree.map(uniform, starts, lower, upper, tuple(keys))
+            starts = jax.tree.map(lambda z, r: jnp.concatenate([z, r]), starts, random)
+
+        solve = lambda start: optim.minimise(mle_loss, start, bounds=bounds)
+        results = jax.vmap(solve)(starts)
 
         # extract the optimal parameters
-        dead = ~jnp.isfinite(result.f)
-        result = eqx.error_if(result, dead, "fit ended with non finite loss")
-        log_l0, log_rho, log_g = result.x
+        dead = ~jnp.any(jnp.isfinite(results.f))
+        results = eqx.error_if(results, dead, "fit ended with non finite loss")
+        best = jnp.nanargmin(results.f)
+        log_l0, log_rho, log_g = jax.tree.map(lambda z: z[best], results.x)
         l0, g = jnp.exp(log_l0), jnp.exp(log_g)
         rho = rho_prefactor(l0) * jnp.exp(log_rho)
 
