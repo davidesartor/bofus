@@ -18,6 +18,7 @@ from targets import (
     PinWheel,
     Brachistochrone,
     HoppingRobot,
+    Whip,
     MNIST,
 )
 from vlse import (
@@ -54,11 +55,12 @@ def run(
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
     save_path: str | None = None,
     verbose: bool = False,
+    adaptive: bool = True,
 ) -> dict:
     """Sequential EI loop doubling the basis size, each stage doubling the observations."""
     key = jr.key(seed)
     d, k = target_fn.d, target_fn.k
-    schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
+    schedule = [1 << s for s in range((m - 1).bit_length())] + [m] if adaptive else [m]
 
     # initialize the observation buffers with the evaluated latin hypercube sample
     key, key_init = jr.split(key)
@@ -137,6 +139,8 @@ if __name__ == "__main__":
         pinwheel=PinWheel,
         brachistochrone=Brachistochrone,
         hopper=HoppingRobot,
+        whip=Whip,
+        **{f"whip{i}": partial(Whip, target=i) for i in range(1, 7)},
         mnist=MNIST,
     )
 
@@ -157,6 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--initial_acquisitions", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--fixed_m", action="store_true", help="Keep the basis size fixed at m.")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
 
@@ -176,6 +181,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         save_path=save_path,
         verbose=args.verbose,
+        adaptive=not args.fixed_m,
     )
 
     if args.verbose:

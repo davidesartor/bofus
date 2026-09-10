@@ -18,3 +18,4 @@ from .pinwheel import PinWheel
 from .neuralnetworks import MNIST
 from .brachistochrone import Brachistochrone
 from .hopper import HoppingRobot
+from .whip import Whip
