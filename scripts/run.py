@@ -141,6 +141,7 @@ if __name__ == "__main__":
         hopper=HoppingRobot,
         whip=Whip,
         **{f"whip{i}": partial(Whip, target=i) for i in range(1, 7)},
+        whip2d=partial(Whip, planar=True),
         mnist=MNIST,
     )
 

@@ -1,4 +1,4 @@
-"""4-DOF arm striking a target with a 25-node whip (Nah et al., iScience 2023)."""
+"""Arm striking a target with a 25-node whip (Nah et al., BIOROB 2020 planar, iScience 2023 spatial)."""
 
 from typing import Callable, NamedTuple
 from jaxtyping import Array, Float, Int, Scalar
@@ -34,22 +34,25 @@ class Chain(NamedTuple):
     masses: Float[Array, "m"]
     com_offsets: Float[Array, "m 3"]
     attached_to: Int[Array, "m"]
+    n_arm: int
+    hinges_per_node: int
 
 
-def build_chain(n_nodes: int, p: WhipParams) -> Chain:
+def build_chain(n_nodes: int, p: WhipParams, planar: bool = False) -> Chain:
     """Shoulder (flexion -y, adduction -x, rotation +z), elbow (-y), then (+x, -y) per whip node.
 
+    The planar model keeps only the -y hinges: shoulder, elbow and one per node.
     Bodies are the two arm links, the massless hand (for gravity compensation)
     and the whip point masses, each attached after the hinge index in `attached_to`.
     """
-    n = 4 + 2 * n_nodes
-    axes = np.array(
-        [[0, -1, 0], [-1, 0, 0], [0, 0, 1], [0, -1, 0]]
-        + [[1, 0, 0], [0, -1, 0]] * n_nodes
-    )
+    arm_axes = [[0, -1, 0]] * 2 if planar else [[0, -1, 0], [-1, 0, 0], [0, 0, 1], [0, -1, 0]]
+    node_axes = [[0, -1, 0]] if planar else [[1, 0, 0], [0, -1, 0]]
+    n_arm, per_node = len(arm_axes), len(node_axes)
+    n = n_arm + per_node * n_nodes
+    axes = np.array(arm_axes + node_axes * n_nodes)
     lengths = np.zeros(n)
-    lengths[[2, 3]] = p.arm_length
-    lengths[5::2] = p.segment_length
+    lengths[[n_arm - 2, n_arm - 1]] = p.arm_length
+    lengths[n_arm + per_node - 1 :: per_node] = p.segment_length
     offsets = np.zeros((n, 3))
     offsets[:, 2] = -lengths
 
@@ -58,8 +61,10 @@ def build_chain(n_nodes: int, p: WhipParams) -> Chain:
     com_offsets[:2, 2] = -np.asarray(p.arm_com)
     com_offsets[2, 2] = -p.arm_length[1]
     com_offsets[3:, 2] = -p.segment_length
-    attached_to = np.concatenate([[2, 3, 3], 5 + 2 * np.arange(n_nodes)])
-    return Chain(*map(jnp.asarray, (axes, offsets, masses, com_offsets, attached_to)))
+    node_hinges = n_arm + per_node - 1 + per_node * np.arange(n_nodes)
+    attached_to = np.concatenate([[n_arm - 2, n_arm - 1, n_arm - 1], node_hinges])
+    arrays = map(jnp.asarray, (axes, offsets, masses, com_offsets, attached_to))
+    return Chain(*arrays, n_arm, per_node)
 
 
 def rodrigues(axis: Float[Array, "3"], angle: Scalar) -> Float[Array, "3 3"]:
@@ -92,20 +97,20 @@ def jacobians(q: Float[Array, "n"], chain: Chain):
     return Jv, Jw, R_body[:2]
 
 
-def node_positions(q: Float[Array, "n"], chain: Chain) -> Float[Array, "n/2-2 3"]:
+def node_positions(q: Float[Array, "n"], chain: Chain) -> Float[Array, "N 3"]:
     return kinematics(q, chain)[3][3:]
 
 
-def joint_positions(q: Float[Array, "n"], chain: Chain) -> Float[Array, "n/2+1 3"]:
+def joint_positions(q: Float[Array, "n"], chain: Chain) -> Float[Array, "N+3 3"]:
     """Shoulder, elbow, hand and the whip nodes, for plotting."""
     _, origins, _, positions = kinematics(q, chain)
-    return jnp.concatenate([origins[jnp.array([0, 3])], positions[2:]])
+    return jnp.concatenate([origins[jnp.array([0, chain.n_arm - 1])], positions[2:]])
 
 
 def dynamics_terms(
     q: Float[Array, "n"], dq: Float[Array, "n"], chain: Chain, p: WhipParams
 ) -> tuple[
-    Float[Array, "n n"], Float[Array, "n"], Float[Array, "n"], Float[Array, "4"]
+    Float[Array, "n n"], Float[Array, "n"], Float[Array, "n"], Float[Array, "k"]
 ]:
     """Mass matrix, velocity-product forces, gravity forces and the arm's gravity compensation."""
     (Jv, Jw, R), (dJv, dJw, _) = jax.jvp(lambda q: jacobians(q, chain), (q,), (dq,))
@@ -126,15 +131,17 @@ def dynamics_terms(
     gravity = -p.gravity * einsum(Jv[:, :, 2], m, "m j, m -> j")
     # the original compensates the arm links plus the whole whip mass lumped at the hand
     lumped = m.at[2].set(m[3:].sum()).at[3:].set(0.0)
-    compensation = p.gravity * einsum(Jv[:, :4, 2], lumped, "m j, m -> j")
+    compensation = p.gravity * einsum(Jv[:, : chain.n_arm, 2], lumped, "m j, m -> j")
     return M, bias, gravity, compensation
 
 
-def hanging_whip_angles(q_arm: Float[Array, "4"], chain: Chain) -> Float[Array, "2"]:
-    """First universal joint angles that point the whip straight down from the hand."""
-    q = jnp.zeros(chain.axes.shape[0]).at[:4].set(q_arm)
+def hanging_whip_angles(q_arm: Float[Array, "k"], chain: Chain) -> Float[Array, "h"]:
+    """First node's hinge angles that point the whip straight down from the hand."""
+    q = jnp.zeros(chain.axes.shape[0]).at[: chain.n_arm].set(q_arm)
     R_forearm = kinematics(q, chain)[2][1]
     vx, vy, vz = R_forearm.T @ jnp.array([0.0, 0.0, -1.0])
+    if chain.hinges_per_node == 1:
+        return jnp.array([jnp.arctan2(vx, -vz)])
     return jnp.array([jnp.arctan2(vy, -vz), jnp.arcsin(vx)])
 
 
@@ -151,6 +158,15 @@ def target_position(index: int, reach: float, offset: float = 0.4) -> Float[Arra
     return radius * jnp.array(direction)
 
 
+STIFFNESS_SPATIAL = (
+    (17.4, 6.85, -7.75, 8.40),
+    (6.85, 33.0, 3.70, 0.00),
+    (-7.75, 3.70, 27.7, 0.00),
+    (8.40, 0.00, 0.00, 23.2),
+)
+STIFFNESS_PLANAR = ((29.5, 14.3), (14.3, 39.3))
+"""Joint stiffness of the 4-DOF and 2-DOF arms (constants.py of the original code)."""
+
 PAPER_MIN_JERK = {
     1: ((-1.3614, 0.0, -0.3491, 1.4137), (1.7279, 0.0, 0.0, 1.4137), 0.9500),
     2: ((-0.9425, 0.0, -1.0472, 1.4137), (1.7279, -1.0472, 0.0, 0.4712), 0.9500),
@@ -161,127 +177,201 @@ PAPER_MIN_JERK = {
 }
 """Table 1 of the paper: initial posture, final posture and duration of the best min-jerk move."""
 
+PAPER_MIN_JERK_BOUNDS = (
+    np.array([-0.5 * np.pi, -0.5 * np.pi, -0.5 * np.pi, 0.0, 0.1 * np.pi, -0.5 * np.pi, -0.5 * np.pi, 0.0, 0.4]),
+    np.array([-0.1 * np.pi, 0.5 * np.pi, 0.5 * np.pi, 0.9 * np.pi, 1.0 * np.pi, 0.5 * np.pi, 0.5 * np.pi, 0.9 * np.pi, 1.5]),
+)
+"""Search box of the paper's DIRECT-L run (main_opt_NLOPT.py): q_start[4], q_end[4], duration."""
+
+PAPER_TWO_MOVES_PLANAR = ((0.7854, 0.4712), (-1.3614, 0.1571), (1.0472, 0.4712), 0.5833, 1.4389, 0.3333)
+"""Planar strike of main_whip.py: initial, via and final posture, both durations and the overlap."""
+
+PAPER_TWO_MOVES_PLANAR_BOUNDS = (
+    np.array([0.0, 0.0, -0.5 * np.pi, 0.0, -0.5 * np.pi, 0.0, 0.4, 0.4, -0.5]),
+    np.array([0.5 * np.pi, 0.9 * np.pi, -0.1 * np.pi, 0.9 * np.pi, 0.5 * np.pi, 0.9 * np.pi, 1.5, 1.5, 0.5]),
+)
+"""Planar search box of main_opt_NLOPT.py: q_start[2], q_via[2], q_end[2], two durations, overlap."""
+
 
 def min_jerk(
-    ts: Float[Array, "t"], q_start: Float[Array, "4"], q_end: Float[Array, "4"], duration: float
-) -> tuple[Float[Array, "t 4"], Float[Array, "t 4"]]:
-    """Minimum-jerk move from q_start to q_end starting at t=0, held still before and after."""
-    tau = jnp.clip(ts / duration, 0.0, 1.0)[:, None]
+    ts: Float[Array, "t"],
+    q_start: Float[Array, "k"],
+    q_end: Float[Array, "k"],
+    duration: float,
+    start: float = 0.0,
+) -> tuple[Float[Array, "t k"], Float[Array, "t k"]]:
+    """Minimum-jerk move from q_start to q_end starting at `start`, held still before and after."""
+    tau = jnp.clip((ts - start) / duration, 0.0, 1.0)[:, None]
     shape = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
     rate = (30 * tau**2 - 60 * tau**3 + 30 * tau**4) / duration
     return q_start + (q_end - q_start) * shape, (q_end - q_start) * rate
 
 
 class Whip:
-    """Hit a target with a whip held by a joint-impedance-controlled 4-DOF arm.
+    """Hit a target with a whip held by a joint-impedance-controlled arm.
 
-    The four outputs of f are the zero-torque joint trajectories over normalized
-    time (Equation 1 of the paper). The cost is the smallest distance the last
-    `n_tip_nodes` whip nodes ever get to the target, minus the contact radius.
+    The outputs of f are the zero-torque joint trajectories over normalized time
+    (Equation 1 of the paper): 4 for the spatial arm, 2 (shoulder, elbow) for the
+    planar one. The cost is the smallest distance the last `n_tip_nodes` whip nodes
+    ever get to the target, minus the contact radius. The planar strike lands late,
+    so its rollout runs 4 s as in the original code (2.5 s is enough in 3D).
     """
 
     d: int = 1  # normalized time
-    k: int = 4  # shoulder flexion, adduction, rotation and elbow
 
     def __init__(
         self,
         params: WhipParams = WhipParams(),
         n_nodes: int = 25,
-        target: int | tuple[float, float, float] = 1,
-        hit_radius: float = 0.05,
+        planar: bool = False,
+        target: int | tuple[float, float, float] | None = None,
+        hit_radius: float | None = None,
         n_tip_nodes: int = 5,
-        stiffness_matrix: tuple[tuple[float, ...], ...] = (
-            (17.4, 6.85, -7.75, 8.40),
-            (6.85, 33.0, 3.70, 0.00),
-            (-7.75, 3.70, 27.7, 0.00),
-            (8.40, 0.00, 0.00, 23.2),
-        ),
+        stiffness_matrix: tuple[tuple[float, ...], ...] | None = None,
         damping_ratio: float = 0.05,
-        reference_center: tuple[float, ...] = (0.25 * np.pi, 0.0, 0.0, 0.45 * np.pi),
-        reference_amplitude: tuple[float, ...] = (
-            0.75 * np.pi,
-            0.5 * np.pi,
-            0.5 * np.pi,
-            0.45 * np.pi,
-        ),
-        horizon: float = 2.5,
+        reference_center: tuple[float, ...] | None = None,
+        reference_amplitude: tuple[float, ...] | None = None,
+        horizon: float | None = None,
         dt: float = 5e-4,
     ):
         self.params = params
         self.n_nodes = n_nodes
-        self.chain = build_chain(n_nodes, params)
+        self.planar = planar
+        self.k = 2 if planar else 4
+        self.chain = build_chain(n_nodes, params, planar)
         self.reach = float(jnp.sum(params.arm_length)) + n_nodes * params.segment_length
+
+        # the planar model has one target, straight ahead at full reach; contact radii are the geoms'
+        if target is None:
+            target = (self.reach, 0.0, 0.0) if planar else 1
         if isinstance(target, int):
+            if planar:
+                raise ValueError("the planar model has no target index; pass a position")
             target = target_position(target, self.reach)
         self.target = jnp.asarray(target, float)
-        self.hit_radius = hit_radius
+        self.hit_radius = (0.06 if planar else 0.05) if hit_radius is None else hit_radius
         self.n_tip_nodes = n_tip_nodes
+
+        # the paper's arm impedance and the search box of its DIRECT-L run, as center ± amplitude
+        if stiffness_matrix is None:
+            stiffness_matrix = STIFFNESS_PLANAR if planar else STIFFNESS_SPATIAL
+        if reference_center is None:
+            reference_center = (0.0, 0.45 * np.pi) if planar else (0.25 * np.pi, 0.0, 0.0, 0.45 * np.pi)
+        if reference_amplitude is None:
+            reference_amplitude = (0.5 * np.pi, 0.45 * np.pi) if planar else (0.75 * np.pi, 0.5 * np.pi, 0.5 * np.pi, 0.45 * np.pi)
         self.Kq = jnp.asarray(stiffness_matrix, float)
         self.Bq = damping_ratio * self.Kq
         self.reference_center = jnp.asarray(reference_center, float)
         self.reference_amplitude = jnp.asarray(reference_amplitude, float)
-        self.horizon = horizon
+        self.horizon = (4.0 if planar else 2.5) if horizon is None else horizon
         self.dt = dt
 
     @property
     def n_steps(self) -> int:
         return round(self.horizon / self.dt)
 
-    def __call__(self, f: Callable[[Float[Array, "1"]], Float[Array, "4"]]) -> Scalar:
+    def __call__(self, f: Callable[[Float[Array, "1"]], Float[Array, "k"]]) -> Scalar:
         _, q0, dq0 = self.reference(f)
+        return self.evaluate_reference(q0, dq0)
+
+    def evaluate_reference(
+        self, q0: Float[Array, "t k"], dq0: Float[Array, "t k"]
+    ) -> Scalar:
+        """Cost of following a zero-torque trajectory; a diverged rollout scores the worst case."""
         _, qs, _ = self.rollout(q0, dq0)
         cost = self.min_distance(qs)
-        # a diverged rollout scores the worst case rather than poisoning the surrogate
         return jnp.where(jnp.isnan(cost), 2 * self.reach, cost)
 
     def reference(
-        self, f: Callable[[Float[Array, "1"]], Float[Array, "4"]]
-    ) -> tuple[Float[Array, "t"], Float[Array, "t 4"], Float[Array, "t 4"]]:
+        self, f: Callable[[Float[Array, "1"]], Float[Array, "k"]]
+    ) -> tuple[Float[Array, "t"], Float[Array, "t k"], Float[Array, "t k"]]:
         """Zero-torque joint trajectory and its rate at every step."""
 
-        def q0(t: Scalar) -> Float[Array, "4"]:
-            f_t = jnp.reshape(f(jnp.array([t / self.horizon])), (4,))
+        def q0(t: Scalar) -> Float[Array, "k"]:
+            f_t = jnp.reshape(f(jnp.array([t / self.horizon])), (self.k,))
             return self.reference_center + self.reference_amplitude * f_t
 
         ts = jnp.arange(self.n_steps) * self.dt
         q0s, dq0s = jax.vmap(lambda t: (q0(t), jax.jacfwd(q0)(t)))(ts)
         return ts, q0s, dq0s
 
-    def paper_reference(
-        self, index: int
-    ) -> tuple[Float[Array, "t"], Float[Array, "t 4"], Float[Array, "t 4"]]:
-        """The paper's best min-jerk move for target `index` (Table 1), sampled at every step."""
-        q_start, q_end, duration = (jnp.asarray(v, float) for v in PAPER_MIN_JERK[index])
+    def min_jerk_reference(
+        self,
+        q_start: Float[Array, "k"],
+        q_end: Float[Array, "k"],
+        duration: float,
+        start: float = 0.0,
+    ) -> tuple[Float[Array, "t"], Float[Array, "t k"], Float[Array, "t k"]]:
+        """The paper's parametrization: one min-jerk move, sampled at every step."""
         ts = jnp.arange(self.n_steps) * self.dt
-        q0s, dq0s = min_jerk(ts, q_start, q_end, float(duration))
+        q0s, dq0s = min_jerk(ts, jnp.asarray(q_start, float), jnp.asarray(q_end, float), duration, start)
         return ts, q0s, dq0s
+
+    def two_moves_reference(
+        self,
+        q_start: Float[Array, "k"],
+        q_via: Float[Array, "k"],
+        q_end: Float[Array, "k"],
+        duration_1: float,
+        duration_2: float,
+        overlap: float,
+    ) -> tuple[Float[Array, "t"], Float[Array, "t k"], Float[Array, "t k"]]:
+        """Planar parametrization: a second min-jerk move superposed `overlap * duration_1` after the first ends."""
+        q_via, q_end = jnp.asarray(q_via, float), jnp.asarray(q_end, float)
+        ts, q0s, dq0s = self.min_jerk_reference(q_start, q_via, duration_1)
+        start_2 = (1.0 + overlap) * duration_1
+        q0s_2, dq0s_2 = min_jerk(ts, jnp.zeros(self.k), q_end - q_via, duration_2, start_2)
+        return ts, q0s + q0s_2, dq0s + dq0s_2
+
+    def paper_reference(
+        self, index: int = 1
+    ) -> tuple[Float[Array, "t"], Float[Array, "t k"], Float[Array, "t k"]]:
+        """The paper's best min-jerk move for target `index` (Table 1); the planar strike of main_whip.py."""
+        if self.planar:
+            return self.two_moves_reference(*PAPER_TWO_MOVES_PLANAR)
+        q_start, q_end, duration = PAPER_MIN_JERK[index]
+        return self.min_jerk_reference(q_start, q_end, duration)
+
+    @property
+    def direct_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        """Search box of the paper's DIRECT-L run, in the coordinates of `direct_reference`."""
+        return PAPER_TWO_MOVES_PLANAR_BOUNDS if self.planar else PAPER_MIN_JERK_BOUNDS
+
+    def direct_reference(
+        self, pars: Float[Array, "9"]
+    ) -> tuple[Float[Array, "t"], Float[Array, "t k"], Float[Array, "t k"]]:
+        """The paper's DIRECT-L parametrization: one min-jerk move, or two overlapping ones when planar."""
+        if self.planar:
+            return self.two_moves_reference(pars[:2], pars[2:4], pars[4:6], *map(float, pars[6:]))
+        return self.min_jerk_reference(pars[:4], pars[4:8], float(pars[8]))
 
     @eqx.filter_jit
     def rollout(
-        self, q0: Float[Array, "t 4"], dq0: Float[Array, "t 4"]
+        self, q0: Float[Array, "t k"], dq0: Float[Array, "t k"]
     ) -> tuple[Float[Array, "t+1"], Float[Array, "t+1 n"], Float[Array, "t+1 n"]]:
         """Semi-implicit Euler with implicit joint damping (as MuJoCo), from rest, whip hanging."""
         p, chain = self.params, self.chain
-        n = 4 + 2 * self.n_nodes
-        whip_stiffness = jnp.full(2 * self.n_nodes, p.stiffness).at[:2].set(0.0)
-        whip_damping = jnp.full(2 * self.n_nodes, p.damping).at[:2].set(0.0)
-        D = jnp.zeros((n, n)).at[:4, :4].set(self.Bq) + jnp.diag(
-            jnp.pad(whip_damping, (4, 0))
+        n_arm, per_node = chain.n_arm, chain.hinges_per_node
+        n = chain.axes.shape[0]
+        whip_stiffness = jnp.full(n - n_arm, p.stiffness).at[:per_node].set(0.0)
+        whip_damping = jnp.full(n - n_arm, p.damping).at[:per_node].set(0.0)
+        D = jnp.zeros((n, n)).at[:n_arm, :n_arm].set(self.Bq) + jnp.diag(
+            jnp.pad(whip_damping, (n_arm, 0))
         )
 
         def step(state, ref):
             q, dq = state
             q0_t, dq0_t = ref
             M, bias, gravity, compensation = dynamics_terms(q, dq, chain, p)
-            tau_arm = self.Kq @ (q0_t - q[:4]) + self.Bq @ dq0_t + compensation
-            tau = jnp.concatenate([tau_arm, -whip_stiffness * q[4:]]) - D @ dq
+            tau_arm = self.Kq @ (q0_t - q[:n_arm]) + self.Bq @ dq0_t + compensation
+            tau = jnp.concatenate([tau_arm, -whip_stiffness * q[n_arm:]]) - D @ dq
             ddq = jnp.linalg.solve(M + self.dt * D, tau + gravity - bias)
             dq = dq + self.dt * ddq
             q = q + self.dt * dq
             return (q, dq), (q, dq)
 
-        q_init = jnp.zeros(n).at[:4].set(q0[0])
-        q_init = q_init.at[4:6].set(hanging_whip_angles(q0[0], chain))
+        q_init = jnp.zeros(n).at[:n_arm].set(q0[0])
+        q_init = q_init.at[n_arm : n_arm + per_node].set(hanging_whip_angles(q0[0], chain))
         _, (qs, dqs) = jax.lax.scan(step, (q_init, jnp.zeros(n)), (q0, dq0))
         ts = jnp.arange(self.n_steps + 1) * self.dt
         qs = jnp.concatenate([q_init[None], qs])
@@ -297,10 +387,10 @@ class Whip:
 
     def animate(
         self,
-        f: Callable[[Float[Array, "1"]], Float[Array, "4"]],
+        f: Callable[[Float[Array, "1"]], Float[Array, "k"]],
         filename="whip.gif",
         fps=30,
-        view=(20.0, -60.0),
+        view: tuple[float, float] | None = None,
         figsize=(7.0, 6.0),
     ):
         import matplotlib.pyplot as plt
@@ -319,7 +409,7 @@ class Whip:
         r = self.reach
         ax.set_xlim(-r, r), ax.set_ylim(-r, r), ax.set_zlim(-r, r)
         ax.set_box_aspect((1, 1, 1))
-        ax.view_init(*view)
+        ax.view_init(*((0.0, -90.0) if self.planar else (20.0, -60.0)) if view is None else view)
         ax.scatter(*np.asarray(self.target), s=40, color="r", alpha=0.6)
         (arm,) = ax.plot([], [], [], "o-", lw=3, color="steelblue", ms=5)
         (whip,) = ax.plot([], [], [], "-", lw=1.5, color="magenta")
