@@ -52,11 +52,11 @@ if __name__ == "__main__":
     parser.add_argument("--maxeval", type=int, default=600)
     parser.add_argument("--stopval", type=float, default=1e-5)
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--results_dir", default="results")
+    parser.add_argument("--results_dir", default="results/icra")
     args = parser.parse_args()
 
-    name = "whip2d" if args.planar else f"whip{args.target}"
-    save_dir = f"{args.results_dir}/{name}/paper_direct_l"
+    name = "whip2d" if args.planar else f"whip3d_{args.target}"
+    save_dir = f"{args.results_dir}/{name}/minjerk_direct"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/run.npz"
 
