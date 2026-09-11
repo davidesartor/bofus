@@ -1,4 +1,4 @@
-"""Build an interactive Plotly dashboard from the saved whip runs."""
+"""Build an interactive Plotly dashboard from the saved whip runs, complete or in flight."""
 
 import argparse
 import json
@@ -15,16 +15,27 @@ from bofus.rkhs import RBFMixture
 from targets.whip import Whip, joint_positions
 
 TEMPLATE = Path(__file__).parent / "templates" / "whip_dashboard.html"
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 MODELS = (1, 2, 4)
-TARGETS = range(1, 7)
+TASKS = {"whip2d": "2D", **{f"whip3d_{i}": f"3D target {i}" for i in range(1, 7)}}
 # DIRECT-L iterations to converge, from the paper text (exact only for targets 3 and 5)
-PAPER_ITERATIONS = {1: (100, "<100"), 2: (100, "<100"), 3: (39, "39"), 4: (250, "<250"), 5: (249, "249"), 6: (250, "<250")}
+PAPER_ITERATIONS = {
+    1: (100, "<100"),
+    2: (100, "<100"),
+    3: (39, "39"),
+    4: (250, "<250"),
+    5: (249, "249"),
+    6: (250, "<250"),
+}
+
+
+def make_whip(task: str) -> Whip:
+    return Whip(planar=True) if task == "whip2d" else Whip(target=int(task[-1]))
 
 
 @eqx.filter_jit
 def simulate_reference(
-    whip: Whip, q0: Float[Array, "t 4"], dq0: Float[Array, "t 4"]
+    whip: Whip, q0: Float[Array, "t k"], dq0: Float[Array, "t k"]
 ) -> tuple[Scalar, Float[Array, "48 n/2+1 3"]]:
     """Roll out a reference trajectory: its objective and subsampled joint positions."""
     _, qs, _ = whip.rollout(q0, dq0)
@@ -41,15 +52,16 @@ def animate_solution(whip: Whip, data: np.lib.npyio.NpzFile, index: int) -> np.n
     return np.asarray(frames).round(4)
 
 
-def paper_solution(whip: Whip, target: int, direct_path: Path) -> dict:
-    """The paper's Table 1 min-jerk move for this target, scored with the same objective.
+def paper_solution(whip: Whip, task: str, direct_path: Path) -> dict:
+    """The paper's own move for this task, scored with the same objective.
 
     When our port of the paper's DIRECT-L run (scripts/run_whip_direct.py) has been
     saved, its evaluation trace replaces the iteration count quoted from the paper.
     """
-    _, q0, dq0 = whip.paper_reference(target)
+    planar = task == "whip2d"
+    _, q0, dq0 = whip.paper_reference(1 if planar else int(task[-1]))
     cost, frames = simulate_reference(whip, q0, dq0)
-    iterations, label = PAPER_ITERATIONS[target]
+    iterations, label = (None, "n/a") if planar else PAPER_ITERATIONS[int(task[-1])]
     solution = {
         "y": float(cost),
         "iterations": iterations,
@@ -58,7 +70,6 @@ def paper_solution(whip: Whip, target: int, direct_path: Path) -> dict:
     }
     if direct_path.exists():
         y = np.load(direct_path)["y"].astype(float)
-        solution["directY"] = y.tolist()
         solution["directBest"] = np.minimum.accumulate(y).tolist()
     return solution
 
@@ -90,59 +101,95 @@ def running_best_poses(
     return pose_steps, poses
 
 
+def median_running_best(bests: list[np.ndarray]) -> list[float]:
+    """Median across seeds at every step, over the seeds that have reached it."""
+    width = max(len(b) for b in bests)
+    padded = np.full((len(bests), width), np.nan)
+    for row, b in zip(padded, bests):
+        row[: len(b)] = b
+    return np.nanmedian(padded, axis=0).tolist()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", default="results")
+    parser.add_argument("--results_dir", default="results/icra")
+    parser.add_argument("--method", default="rbf_ei")
+    parser.add_argument(
+        "--budget", type=int, default=256, help="Acquisitions a finished run has."
+    )
     parser.add_argument("--out", default="plots/whip_dashboard.html")
     parser.add_argument("--cache_dir", default="plots/.cache/whip_dashboard")
     args = parser.parse_args()
 
-    paths = {
-        (model, target): Path(
-            f"{args.results_dir}/whip{target}/ours_adaptive/matern52/seed_0_m_{model}.npz"
-        )
-        for model in MODELS
-        for target in TARGETS
-    }
-    total_candidates = sum(
-        int(np.count_nonzero(y == np.minimum.accumulate(y)))
-        for path in paths.values()
-        if path.exists()
-        for y in [np.load(path)["y"]]
-    )
-
-    payload = {model: {} for model in MODELS}
-    payload["tipNodes"] = Whip().n_tip_nodes
-    payload["paper"] = {
-        target: paper_solution(
-            Whip(target=target),
-            target,
-            Path(f"{args.results_dir}/whip{target}/paper_direct_l/run.npz"),
-        )
-        for target in tqdm(TARGETS, desc="Simulating paper references", unit="target")
-    }
-    progress = tqdm(total=total_candidates, desc="Simulating whip candidates", unit="candidate")
-    for (model, target), path in paths.items():
-        if not path.exists():
-            payload[model][target] = None
-            continue
-        progress.set_postfix(model=f"m={model}", target=f"whip{target}")
-        whip = Whip(target=target)
-        cache_path = Path(args.cache_dir) / f"m{model}_whip{target}.npz"
-        pose_steps, poses = running_best_poses(whip, path, cache_path, progress)
-        y = np.load(path)["y"].astype(float)
-        payload[model][target] = {
-            "y": y.tolist(),
-            "best": np.minimum.accumulate(y).tolist(),
-            "target": np.asarray(whip.target).round(4).tolist(),
-            "poseSteps": pose_steps,
-            "poses": poses,
+    # every saved run, keyed by task and basis size, in seed order
+    runs = {
+        task: {
+            model: sorted(
+                Path(f"{args.results_dir}/{task}/{args.method}/matern52").glob(
+                    f"seed_*_m_{model}.npz"
+                ),
+                key=lambda p: int(p.stem.split("_")[1]),
+            )
+            for model in MODELS
         }
-    progress.close()
+        for task in TASKS
+    }
+    payload = {
+        "tipNodes": Whip().n_tip_nodes,
+        "budget": args.budget,
+        "method": args.method,
+        "tasks": {},
+        "runs": {task: {} for task in TASKS},
+    }
+
+    progress = tqdm(list(TASKS), desc="Simulating whip runs", unit="task")
+    for task in progress:
+        whip = make_whip(task)
+        payload["tasks"][task] = {
+            "label": TASKS[task],
+            "planar": whip.planar,
+            "target": np.asarray(whip.target).round(4).tolist(),
+            "hitRadius": whip.hit_radius,
+            "horizon": whip.horizon,
+            "paper": paper_solution(
+                whip, task, Path(f"{args.results_dir}/{task}/minjerk_direct/run.npz")
+            ),
+        }
+        for model in MODELS:
+            paths = runs[task][model]
+            if not paths:
+                continue
+            seeds = {}
+            for path in paths:
+                y = np.load(path)["y"].astype(float)
+                seeds[int(path.stem.split("_")[1])] = {
+                    "y": y.tolist(),
+                    "best": np.minimum.accumulate(y).tolist(),
+                    "done": len(y) >= args.budget,
+                }
+            # the animation follows the seed whose running best is lowest so far
+            animated = min(seeds, key=lambda s: seeds[s]["best"][-1])
+            path = next(p for p in paths if int(p.stem.split("_")[1]) == animated)
+            progress.set_postfix(model=f"m={model}", seed=animated)
+            cache_path = Path(args.cache_dir) / f"{task}_m{model}_seed{animated}.npz"
+            pose_steps, poses = running_best_poses(
+                whip, path, cache_path, tqdm(disable=True)
+            )
+            payload["runs"][task][model] = {
+                "seeds": seeds,
+                "median": median_running_best(
+                    [np.asarray(s["best"]) for s in seeds.values()]
+                ),
+                "animated": animated,
+                "poseSteps": pose_steps,
+                "poses": poses,
+            }
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    html = TEMPLATE.read_text().replace("/*__DATA__*/", json.dumps(payload, separators=(",", ":")))
+    html = TEMPLATE.read_text().replace(
+        "/*__DATA__*/", json.dumps(payload, separators=(",", ":"))
+    )
     out.write_text(html)
     print(f"wrote {out}")
 
