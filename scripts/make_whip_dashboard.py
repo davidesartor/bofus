@@ -41,17 +41,26 @@ def animate_solution(whip: Whip, data: np.lib.npyio.NpzFile, index: int) -> np.n
     return np.asarray(frames).round(4)
 
 
-def paper_solution(whip: Whip, target: int) -> dict:
-    """The paper's Table 1 min-jerk move for this target, scored with the same objective."""
+def paper_solution(whip: Whip, target: int, direct_path: Path) -> dict:
+    """The paper's Table 1 min-jerk move for this target, scored with the same objective.
+
+    When our port of the paper's DIRECT-L run (scripts/run_whip_direct.py) has been
+    saved, its evaluation trace replaces the iteration count quoted from the paper.
+    """
     _, q0, dq0 = whip.paper_reference(target)
     cost, frames = simulate_reference(whip, q0, dq0)
     iterations, label = PAPER_ITERATIONS[target]
-    return {
+    solution = {
         "y": float(cost),
         "iterations": iterations,
         "iterationsLabel": label,
         "poses": np.asarray(frames).round(4).tolist(),
     }
+    if direct_path.exists():
+        y = np.load(direct_path)["y"].astype(float)
+        solution["directY"] = y.tolist()
+        solution["directBest"] = np.minimum.accumulate(y).tolist()
+    return solution
 
 
 def running_best_poses(
@@ -105,7 +114,11 @@ def main() -> None:
     payload = {model: {} for model in MODELS}
     payload["tipNodes"] = Whip().n_tip_nodes
     payload["paper"] = {
-        target: paper_solution(Whip(target=target), target)
+        target: paper_solution(
+            Whip(target=target),
+            target,
+            Path(f"{args.results_dir}/whip{target}/paper_direct_l/run.npz"),
+        )
         for target in tqdm(TARGETS, desc="Simulating paper references", unit="target")
     }
     progress = tqdm(total=total_candidates, desc="Simulating whip candidates", unit="candidate")
