@@ -105,7 +105,7 @@ class GaussianProcess(NamedTuple):
         *,
         profile: kernels.Profile = kernels.matern52,
         rho_range: tuple[Scalar, Scalar] = (jnp.array(1e-2), jnp.array(1e2)),
-        nugget_range: tuple[Scalar, Scalar] = (jnp.array(1e-4), jnp.array(1e0)),
+        nugget_range: Optional[tuple[Scalar, Scalar]] = None,
         init: Optional[tuple[Float[Array, "k d"], Float[Array, "k"], Scalar]] = None,
         key: Optional[Key] = None,
         n_restarts: int = 2,
@@ -114,7 +114,11 @@ class GaussianProcess(NamedTuple):
 
         Starts are the mid-box default, the previous fit's (l0, rho, g) as init if
         given, and n_restarts uniform draws over the log box when key is given.
+        The nugget floor defaults to sqrt(eps) of the dtype, the smallest that keeps
+        the Cholesky factorization stable.
         """
+        if nugget_range is None:
+            nugget_range = (jnp.sqrt(jnp.finfo(y.dtype).eps), jnp.asarray(1.0, y.dtype))
 
         # padded slots hold arbitrary fill lengthscales, keep them out of the stats
         _, k, m, _ = f.l.shape
