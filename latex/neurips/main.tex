@@ -1,0 +1,758 @@
+\documentclass{article}
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2026
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+% \usepackage{neurips_2026}
+% the "default" option is equal to the "main" option, which is used for the Main Track with double-blind reviewing.
+% 1. "main" option is used for the Main Track
+%  \usepackage[main]{neurips_2026}
+% 2. "position" option is used for the Position Paper Track
+%  \usepackage[position]{neurips_2026}
+% 3. "eandd" option is used for the Evaluations & Datasets Track
+ % \usepackage[eandd]{neurips_2026}
+ % if you need to opt-in for a single-blind submission in the E&D track:
+ %\usepackage[eandd, nonanonymous]{neurips_2026}
+% 4. "creativeai" option is used for the Creative AI Track
+%  \usepackage[creativeai]{neurips_2026}
+% 5. "sglblindworkshop" option is used for the Workshop with single-blind reviewing
+ % \usepackage[sglblindworkshop]{neurips_2026}
+% 6. "dblblindworkshop" option is used for the Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop]{neurips_2026}
+
+% After being accepted, the authors should add "final" behind the track to compile a camera-ready version.
+% 1. Main Track
+ % \usepackage[main, final]{neurips_2026}
+
+% "preprint" option is used for arXiv or other preprint submissions
+ % \usepackage[preprint]{neurips_2026}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2026}
+
+\PassOptionsToPackage{numbers, compress}{natbib}
+\usepackage{neurips_2026}
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{cleveref}
+\usepackage{placeins}
+\usepackage{pifont}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{caption}
+
+
+\usepackage[acronym]{glossaries}
+\newacronym{ei}{EI}{Expected Improvement}
+\newacronym{rkhs}{RKHS}{Reproducing Kernel Hilbert Space}
+\newacronym{rbf}{RBF}{Radial Basis Function}
+\newacronym{bo}{BO}{Bayesian Optimization}
+\newacronym{fbo}{FBO}{Functional Bayesian Optimization}
+\newacronym{gp}{GP}{Gaussian Process}
+\newacronym{lhs}{LHS}{Latin Hypercube Sampling}
+\newacronym{mse}{MSE}{Mean Squared Error}
+\newacronym{mlp}{MLP}{Multi Layer Perceptron}
+\newacronym{rl}{RL}{Reinforcement Learning}
+\newacronym{ci}{CI}{Confidence Interval}
+\newacronym{kmp}{KMP}{Kernel Matching Pursuit}
+
+\glsdisablehyper
+
+\newcommand{\wycoff}{\textsc{L0MO}}
+\newcommand{\vien}{\textsc{Vien}~\cite{vien2018bayesian}}
+\newcommand{\vellanky}{\textsc{Vellanki}~\cite{vellanki2019bayesian}}
+\newcommand{\kundu}{\textsc{Kundu}~\cite{kundu2025active}}
+\newcommand{\shilton}{\textsc{Shilton}~\cite{shilton2020sequential}}
+\newcommand{\random}{\textsc{Random}}
+
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\U}{\mathcal{U}} % search space of functions
+\newcommand{\D}{\mathcal{D}} % domain of the functions over which we wish to optimize
+\newcommand{\F}{\mathcal{F}}
+\newcommand{\Ft}{\tilde{\F}}
+\newcommand{\Hs}{\mathcal{H}}
+\newcommand{\transposed}{^\intercal}
+\newcommand{\norm}[1]{\lVert #1 \rVert}
+\newcommand{\inner}[2]{\langle #1, #2 \rangle}
+\newcommand{\partialover}[1]{\frac{\partial}{\partial #1}}
+%\newcommand{\acq}{\text{acquisition}}
+\newcommand{\acq}{\mathcal{I}}
+
+\newcommand{\kernelH}{k}
+%\newcommand{\kernelGP}{K}
+\newcommand{\kernelGP}{\kappa}
+\newcommand{\vu}{u}
+
+\newcommand{\todo}[1]{{\color{red} TODO: #1}}
+
+\title{
+Bayesian Optimization on Function Spaces via \\ Sparse RKHS Manifolds
+}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+
+
+\author{%
+  Anonymous Authors \\
+  % Author information removed for anonymous submission. \\
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+\gls{bo} has become an established methodology for minimizing black-box functions of a vector input.
+Often, however, this parameter vector arises from the discretization of an inherently functional relationship. 
+Several recent articles have considered the \gls{fbo} setting, in which the variable to be optimized is not a member of a finite dimensional vector space, but rather an infinite dimensional function space.
+In this work, we propose $L^0$ Manifold Optimization (\wycoff), a simple approach to \gls{fbo} which searches a sub-manifold of a \gls{rkhs} consisting of functions with a sparse representation in the kernel functions.
+This results in simpler, more effective functional solutions than existing methods.
+%, and facilitates setting the many hyperparameters that \gls{fbo} requires.
+We discuss in detail the relationship between our method and existing ones, providing a unifying lens through which to view prior works.
+To assess our method against the state of the art, we conduct an extensive computational study, and along the way develop a novel set of benchmark test functions which port standard finite-dimensional ones to the infinite dimensional domain. Our experiments demonstrate that the proposed method achieves superior performance across a wide range of test benchmarks.
+\end{abstract}
+
+
+\section{Introduction}
+
+Many critical applied tasks across chemistry \citep{shields2021bayesian,wang2022bayesian}, materials science \citep{frazier2015materials,pedersen2021bayesian,todorovic2019bayesian} and biomechanics \cite{kim2026validation}, among other areas, can be formulated as \emph{black-box optimization} problems of the form:
+\begin{equation}
+    \min_{\vu \in \U}
+    f(\vu) \,,
+\end{equation}
+where the domain $\U$ of $f$ is usually a compact subset of $\R^P$, most commonly the hypercube $[0,1]^P$.
+A leading strategy for addressing these problems is \gls{bo} \citep{jones1998efficient,frazier2018tutorial,garnett2023bayesian}, which involves reasoning probabilistically about the location of the global minimum given a set of observed input-output relationships $(\vu_1,f(\vu_1)),\ldots,(\vu_N,f(\vu_N))$.
+Given a small initial sample and a total budget $B$, the goal is to choose points one-by-one so as to find the point $\vu$ with the lowest possible $f(\vu)$.
+
+The finite dimensional setting is appropriate when $f$ depends on a finite set of clearly defined parameters.
+Frequently, however, the parameters are actually a discretization of an intrinsically functional quantity.
+For example, the classical \textit{wing weight function} \cite{forrester2008} is typically viewed as an 11 dimensional parametric function. 
+But these parameters encode the shape of a wing, and the space of possible designs actually consists of the in-principle infinite dimensional space of wing shapes.
+%For example, in the context of inertial confinement fusion energy, \cite{crilly2026automated} deployed \gls{bo} to optimize the shape of a fuel pellet, represented by two parameters, and the shape of the laser pulse, represented by five.
+%But the spaces of possible pellet shapes and laser profiles actually consist of in-principle infinite dimensional function spaces.
+
+
+Many other scientists have effected similar discretizations: subject area expertise is used to tame the infinite dimensional nature of the problem and therefore make it amenable to the available \gls{bo} methodology and software environment.
+However, in so doing, they have also restricted the solution space before the campaign has begun: not only is it possible that some slight improvement over the given discretization could be obtained if a flexible functional form were allowed, this conversion to a finite-dimensional setting means that we restrict \gls{bo} to learning solutions already conceivable by the subject matter expert.
+But this rules out the most exciting possibility: that there is some function of a radically different nature than the state of the art which yields unimagined decrease in $f$.
+
+%For example, the \textit{Flee} simulator \cite{ghorbani2024flee} is an Agent-Based Model which simulates the course of refugee crisis, and relies on assumptions about how quickly refugees travel and what causes them to leave their homes. 
+
+This explains the nascent interest in the research community in \gls{fbo}.
+There, the search space $\U$ is a subset of some space $\Hs$ of $\D\to\mathbb{R}$ functions.
+%The goal is to find the function $\vu$ which minimizes $f$ by evaluating as few candidates as possible.
+For the sake of clarity we will use the term \emph{function} to refer to the input $\vu\in\mathcal{U}$, and the term \emph{functional} to refer to $f$.
+We are aware of only a few studies which directly consider \gls{fbo}, and there remains much work to be done in studying this category of problems.
+\cite{shilton2020sequential} and \cite{kundu2025active} search within random linear subspaces, yielding a finite dimensional problem in effect.
+\cite{vellanki2019bayesian} search the space of $n$-th degree Bernstein polynomials, allowing the enforcement of shape priors. They propose a strategy for choosing the polynomial degree, but it is not clear how to scale the approach beyond one-dimensional functions.
+%\cite{vien2018bayesian} use the span of a large number of randomly generated kernel functions, and view gradient descent with respect to the acquisition function as running within the function space.\todo{mmm no?}
+\cite{vien2018bayesian} show that starting with some initial design of functions and then iteratively conducting Bayesian acquisition is tractable, insofar as the trajectory obtained by gradient descent in the function space stays within the span of the kernel functions defining the initial design. 
+These methods all assume that a good function can be found within the initially specified linear subspace.
+%For instance, \cite{vien2018bayesian} assumes that within the span of the initially sampled basis functions lies a function $\vu$ that does a good job of optimizing $f$, and has no recourse if this assumption fails.
+
+In this article, we will propose to solve the acquisition subproblem of the form: 
+\begin{equation}
+    \max_{w\in\mathcal{W}\subseteq \R^l}
+    \acq \left(\phi(w) \right) \,,
+\end{equation}
+where $\acq$ is the acquisition function and $\phi: \R^l \to \Hs$ is a smooth parameterization of an $l$-dimensional sparse sub-manifold of $\Hs$. 
+For a given $l$, this allows a much richer set of candidate functions than existing fixed-basis method: our approach allows the support points themselves to vary.
+This also allows for straightforward enforcement of additional desirable properties such as boundedness and sparsity, while maintaining compatibility with the computational tools used for finite-dimensional \gls{bo} such as multi-start Quasi-Newton search \cite[Chapter 7]{gramacy2020surrogates}.
+%The proposed approach is both simpler and more empirically effective than prior methods.
+
+Our contributions can be summarized as follows:
+\begin{enumerate}
+    \item We provide an extensive discussion of disparate existing methods for \gls{fbo}, providing a unifying lens and showing that \cite{vien2018bayesian} can be interpreted as natural gradient descent in a finite-dimensional parameter space.
+    \item We introduce a ridge function \cite{pinkus2015ridge} approach to defining \gls{fbo} problems from finite dimensional \gls{bo} problems, which allows the use of test problems familiar to the \gls{bo} community.
+    We release an open source python implementation of over $70$ popular \gls{bo} benchmarks and their extension to the functional domain,
+    as well as several new realistic \gls{fbo} problems.
+    \item We introduce a new method for \gls{fbo}, which we call \wycoff{}. We conduct an extensive simulation campaign across \gls{fbo} hyperparameters and a range of synthetic and real test problems, finding that the proposed method performs best overall.
+    We also release the first open source codebase for \gls{fbo}.
+\end{enumerate}
+
+\section{Background}
+
+\paragraph{Gaussian Processes and Bayesian Optimization}
+
+Gaussian processes \citep{rnw} are a rule for assigning to every finite subset of points $\mathcal{X}$ in a domain $\D$ a joint normal distribution $\mathcal{N}(\mu(\mathcal{X}), \Sigma(\mathcal{X}))$.
+The mean function $\mu$ is typically taken to be a simple polynomial or even a constant (we do the latter in our numerical experiments), and determining $\Sigma$ is the subject of most modeling decisions.
+Each element $\Sigma_{i,j}$ is given by a \emph{kernel function} $\kernelGP(x,x')$; the set of functions yielding valid covariance matrices are the \emph{positive definite functions}.
+$\kernelGP$ is often given as a monotonically decreasing function of some measure of dissimilarity between its two arguments.
+In the most common application of GPs to vector inputs, the \gls{rbf} kernel $\kernelGP_{\textrm{RBF}}(x,x') = \sigma^2 e^{-\frac{1}{2\ell}\Vert x-x'\Vert_2^2}$ is used.
+Note the presence of the hyperparameters $\sigma^2$ and $\ell$, which must be learnt, most commonly via numerical likelihood maximization, and this is also the approach taken in this article.
+A key aspect of Gaussian processes that makes them practical is the tractability of their conditional distributions.
+If we observe the value of a GP realization at some set of points $\mathcal{X}_{\textrm{Train}}$, then the posterior distribution is again a Gaussian process with updated mean and covariance functions, straightforwardly computable via the multivariate normal conditioning equations.
+
+The capability to produce a full posterior over any new candidate point $x^*$ given an observation set $\mathcal{X}, f(\mathcal{X})$ undergirds the suitability of a \gls{gp} to perform sequential design.
+In \gls{bo}, this proceeds by defining an \emph{acquisition function} $\acq$ which measures the desirability of $x^*$ in light of the goal of minimization and the information revealed by the data so far observed.
+A popular acquisition function, and the one we use in this work is \gls{ei}:
+\begin{equation}
+    \acq_{\textrm{EI}}(\vu \mid \mathcal{GP}) = \sigma_{\mathcal{GP}}(\vu) \!\big( \gamma(\vu) \Phi(\gamma(\vu)) + \varphi(\gamma(\vu)) \big), \quad \gamma(\vu) = \frac{\mu_{\mathcal{GP}}(\vu) - y^*}{\sigma_{\mathcal{GP}}(\vu)},
+\end{equation}
+where $y^*$ is the current best observation and $\Phi$ and $\varphi$ are the standard normal CDF and PDF.
+The next point to acquire is the one which maximizes the acquisition function.
+Numerically resolving this is no small task, and typically involves a multi-start quasi-Newton search.
+
+\paragraph{Gaussian Processes on Function Spaces}
+Given a kernel function $\kernelH$, its \gls{rkhs} is the closure of all functions of the form
+$\vu = \sum_{i=1}^n \alpha_i \kernelH(\cdot, x_i)$
+for any $n$, equipped with an inner product which privileges these kernel functions.
+In other words, given a \textit{support set} of functions $\F:=\{\kernelH(\cdot,x) : x \in \D\}$, the \gls{rkhs} $\Hs$ is $\overline{\textrm{span}(\F)}$.
+For any two functions expressible as a finite linear combination of support functions,
+$\vu = \sum_{i=1}^n \alpha_i \kernelH(\cdot, x_i)$
+and
+$\vu' = \sum_{j=1}^m \alpha'_j \kernelH(\cdot, x'_j)$,
+we have that
+$
+{\inner{\vu}{\vu'}_\Hs = \sum_{i,j} \alpha_i \alpha_j' \kernelH(x_i,x'_j)},
+$
+and extend $\langle\cdot,\cdot\rangle_{\Hs}$ to the whole space by continuity.
+%which together with the continuity of the inner product yields a Hilbert space.
+%The reproducing property which gives the \gls{rkhs} its name is the fact that taking an inner product of any function $\vu$ against an element $\kernelH(\cdot, x) \in \F$ yields $\vu$ evaluated at $x$: $\inner{\vu}{\kernelH(\cdot,x)}_\Hs = \vu(x)$.
+%\todo{maybe we can say something more here}
+
+As GPs rely on the domain on which they are fit only via $\kernelGP$, they are applicable to a wide range of mathematical objects, including functions.
+In fact, most kernels can be decomposed into a dissimilarity measure, composed with a \emph{profile} function. In particular, given some Hilbert space of functions $\Hs$ with norm $\norm{\cdot}_\Hs$, we can populate the covariance matrix entry between two functions $\vu_i,\vu_j\in\Hs$ via $\Sigma_{i,j} = p(\norm{\vu_i - \vu_j}_\Hs)$ for a given profile function $p$.
+In general, this requires approximating the norm on the function space \citep{muehlenstaedt2017computer,betancourt2020fungp,damiano2022automatic}.
+Following \cite{vien2018bayesian}, we use an \gls{rkhs} as our function space.
+Since we are in the context of a designed experiment rather than observational data, we can afford to choose functions which lead to an easily computed $\norm{\cdot}_\Hs$.
+In particular, if two functions $\vu,\vu' \in \Hs$ are expressible with a finite linear combination of elements of $\F$ we have that 
+\begin{equation}
+\norm{\vu - \vu'}_\Hs^2 = \sum_{i,j} \alpha_i\alpha'_j \kernelH(x_i,x_j) - 2\sum_{i,j} \alpha_i\alpha_j' \kernelH(x_i,x_j') + \sum_{i,j} \alpha_i'\alpha_j' \kernelH(x_i',x_j'),
+\end{equation}
+which can be computed efficiently if neither function consists of overly many basis points.
+
+\gls{rkhs}'s and Gaussian processes are intimately linked \citep{kanagawa2018gaussian}: for example, the posterior mean of a Gaussian process regression lives in the \gls{rkhs} induced by the kernel used for the GP.
+It will be important to avoid confusion between $\kernelGP: \Hs \times\Hs \to \R$, the kernel of the \gls{gp} used as surrogate model, which accepts two functions in $\Hs$ as input and outputs an element of the covariance of the Gaussian process, and $\kernelH:\R^d\times\R^d\to\R$, the kernel of the \gls{rkhs} that represents the functional domain $\D$ of interest, and which is used to construct our candidate functions $u$.
+
+In this work, it will be useful to define an extension of the $\ell^0$ ``norm"
+\footnote{As it clearly fails to obey positive homogeneity, this is not technically a norm. The same will be true of our extension.}
+for vectors, which counts its argument's nonzero coefficients, to functions in an RKHS generated by $\F$.
+If some function $u$ can be represented by a linear combination of $m$ many elements of $\F$ and no fewer, we say that $\Vert u \Vert_0 = m$.
+If not, we say that $\Vert u \Vert_0 = \infty$.
+We refer to this as the $L^0$ norm.
+Notice that while the constraint set $\Vert u \Vert_0\leq m$ in $\mathbb{R}^d$ is not connected, in $\Hs$ it is; this facilitates optimization.
+
+\section{Related Work in \gls{fbo}}
+\label{sec:related_work}
+
+\gls{bo} is classically deployed in low dimensional settings ($P\approx 20$).
+However, recently methods have been proposed which aim to make \gls{bo} more amenable to higher dimensional problems.
+These include using random embeddings \citep{wang2016rembo,letham2020alebo,nayebi2019hesbo}, additive structure \citep{kandasamy2015additive,rolland2018additive,han2021tree}, and
+variable selection \citep{papenmeier2022baxus,eriksson2021saasbo}.
+Recent works have also re-examined the amenability of simple \gls{bo} strategies to scale to high dimensions \citep{hvarfner2024vanilla,doumont2025we}.
+In this section, we rather review the established literature on the $P=\infty$ case.
+As mentioned in the introduction, the overwhelming majority of optimization studies using \gls{bo} to optimize over functions first assume a finite dimensional parameterization before proceeding with standard methods.
+Here we provide an overview of studies which have instead attempted to treat the function space directly, and which will serve as baselines in the numerical experiments.
+
+
+\paragraph{Explicit Subspace Methods}
+\cite{kundu2025active} compare two methods which operate by searching a $K<\infty$ dimensional linear subspace $\mathcal{S}\subset\Hs$ generated by the span of given functions $s_1, \ldots, s_K$.
+The first generates these functions via a random sampling mechanism on $\Hs$, and the second uses the leading eigenfunctions of an integral operator defined with reference to the objective $f$.
+However, the latter procedure assumes that functional gradients of $f$ can be evaluated, which is not available in our black-box setting.
+We therefore focus on exploring the span of random functions.
+%In either case, the procedure allows us to specify a finite dimensional problem by searching over the coefficients of the random functions.
+
+\cite{shilton2020sequential} propose a more sophisticated method which searches within a sequence of affine subspaces.
+Given a current optimal function $\vu_0$, it generates a random set of functions $s_1, \ldots, s_K$ and searches within the $K$ dimensional space $\vu_0 + \textrm{span}(\{s_1, \ldots, s_K\})$ for a fraction $\rho B$ of the overall budget $B$.
+Then, it resamples a new set $s_1, \ldots, s_K$ and searches within the span of those new points offset by the new optimal $\vu$.
+This avoids choosing a single finite dimensional subspace to search within, and operates somewhat like an infinite dimensional analog of \cite{kirschner2019adaptive}.
+\cite{vellanki2019bayesian} take a parametric approach, using Bernstein polynomials of degree $k$ as candidate functions.
+The Bernstein basis allows for the easy enforcement of shape priors, such as monotonicity.
+However, the Bernstein parameterization is most natural in one dimension, and it is unclear how to extend the approach to higher dimensional $\D$.
+
+\paragraph{Direct Optimization in the Function Space}
+%By contrast, \cite{vien2018bayesian} initiated the study of \gls{bo} directly in the function space.
+%Given a point $\vu$ in $\Hs$ with a finite representation in $\F$, they show how to evaluate the Fr\'echet derivative, and demonstrate that it always lies in the span of those same points, such that it is computable.  As we will discuss further in \cref{sec:methodology}, the gradient descent procedure of \cite{vien2018bayesian} expands the support set at each step, leading to a representation that grows rapidly in size.
+%For this reason, ffter optimizing the acquisition function, \gls{kmp} \citep{vincent2002kernel} is used to select a reduced subset of $\Ft$ to define the function $\vu$ to next acquire.
+
+\cite{vien2018bayesian} showed that,  starting with some set of initial functions given by finite linear combinations of elements of $\F$, gradient descent on EI and UCB leads only to evolving the coefficients for those same support functions. 
+This is a positive result in a computational sense: it could have been the case that a single step of gradient descent yields a function which does not have a finite $L^0$ norm, and thus cannot be represented on a computer.
+Luckily, however, we need only update coefficients.
+
+However, this is a double-edged sword: if we do not have a sufficiently diverse representation of elements of $\F$ in our initial design, we will never acquire them through sequential acquisition. 
+This means that all support functions used throughout optimization need to be present in the initial design, and thus that these design points must have a high $L^0$ norm, denoted $v$, if we are to have sufficient expressibility.
+As the number of design points $n$ grows, the complexity of computing the \gls{gp} kernel matrix grows with $v^2n^2$.
+\cite{vien2018bayesian} find that, to manage computation, it is therefore necessary to conduct a post-hoc sparsification step after optimizing the acquisition function.
+This involved deploying \gls{kmp} \citep{vincent2002kernel} to reduce to only $m\ll v$ many support functions.
+Then, kernel computation is only of complexity 
+$v^2n_{\textrm{init}}^2 + v m n_{\textrm{init}}n + m^2n^2 = O(m^2n^2)$.
+
+There are two major limitations to this approach.
+First, even if the initial points have a high $L^0$ norm, there is no guarantee that they are suitable for approximately optimizing $f$, especially if $\D$ is of moderate dimension.
+Though motivated as performing optimization directly in $\Hs$, \cite{vien2018bayesian}'s procedure is ultimately restricted to a finite dimensional linear subspace of $\Hs$ given by the span of the initial support functions. 
+%, there is no guarantee that the post-hoc sparsification does not damage the viability of the next candidate function vis-a-vis the acquisition function; EI is known to change sharply with respect to small changes in the input.
+Second, the post-hoc sparsification step creates a critical issue: the sparse approximation of the optimum is not necessarily the optimum among sparse candidates.
+This situation is similar to solving an integer program by first solving a continuous relaxation and then rounding. 
+In the next section, we will propose a method which addresses both of these limitations.
+
+\section{Methodology}
+\label{sec:methodology}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.99\textwidth]{l0_manifold.pdf}
+  \caption{A schematic view inside $\mathcal{H}$, illustrating our approximation strategy.
+  The sub-manifolds form a strictly increasing nested family $\mathcal{M}^1 \subset \mathcal{M}^2 \subset \mathcal{M}^3 \subset \mathcal{H}$ of increasing dimension, depicted respectively as a curve, a surface patch, and a ball.
+  For a target $u \in \mathcal{H}$ that does not admit a finite sparse representation, the best $m$-sparse approximation $u_m \in \mathcal{M}^m$ moves closer to $u$ as $m$ grows.
+  }
+  \label{fig:natgrad}
+\end{figure}
+
+%The approach of \citep{vien2018bayesian} is clever and theoretically grounded.
+%The demonstration by \citep{vien2018bayesian} that gradient descent can be conducted directly in the function space on a computer opened the door to \gls{fbo}.
+
+We propose to directly optimize over the set of functions we can feasibly represent, i.e. the ones with a sparse representation in $\F$, say of size $m$. 
+However, we maintain and even improve expressibility by allowing the support functions themselves to be selected, not only their coefficients.
+This means jointly choosing $\alpha_1,\ldots,\alpha_m\in\mathcal{A}$ for a suitable coefficient region $\mathcal{A}$, as previous methods have, but also $x_1,\ldots,x_m\in\D$ to define a candidate function $\vu = \sum_{i=1}^m \alpha_i k(\cdot, x_i)$.
+%This in practice means constraining the number of support points and treat them as a continuous parameter to be optimized. 
+For a given $m$, we therefore search the set
+$\mathcal{M}^m = \{u \in \Hs : \Vert u \Vert_0 \leq m\}$.
+%This means optimizing over the finite-dimensional manifold ${\mathcal{M}^M = \{\vu : \exists\, \alpha_1, \ldots, \alpha_M, x_1, \ldots, x_m \,\textrm{s.t.}\, \vu = \sum_{m=1}^M \alpha_m \kernelH(\cdot, x_m)\}}$.
+It is simple to show that for $\vu : \R^d \to \R$, this is in fact a $l:=(d+1)m$-dimensional manifold and not a linear subspace. For instance, $\kernelH(\cdot, x_1)$ and $\kernelH(\cdot, x_2)$ both belong to $\mathcal{M}^1$, but $\kernelH(\cdot, x_1) + \kernelH(\cdot, x_2)$ does not in general. 
+It is also clear that these manifolds are nested such that $\mathcal{M}^1\subset\mathcal{M}^2\subset\ldots$ and that all belong to $\Hs$.
+For general $\D$, there are functions in $\Hs$ that do not belong to any $\mathcal{M}^m$.
+However, by definition of the closure of the span, any function in $\Hs$ can be approximated arbitrarily well by a member of some $\mathcal{M}^m$.
+For moderate $m$, we therefore expect this method to perform well when the functional $f$ can be approximately minimized using functions with small $L^0$ norm.
+From the function space perspective, at each iteration we solve:
+\begin{align}
+    \max_{u\in\Hs} \quad \acq(u) \quad s.t. \quad\,\,\Vert u \Vert_0 \leq m \,,
+\end{align}
+which practically speaking is implemented as:
+\begin{align}
+    &\max_{\substack{x_1, \ldots, x_m\in\D 
+    \\\alpha_1, \ldots, \alpha_m\in\mathcal{A}}} 
+    \quad 
+    \acq\left(\sum_{i=1}^m
+    \alpha_i k(\cdot,x_i)
+    \right)  \,.
+\end{align}
+This involves solving a finite dimensional search to which we can apply the standard tools used to solve the \gls{bo} acquisition subproblem.
+
+%With this strategy in hand, choosing a new function $\vu$ at which to evaluate $f$ thus involves jointly searching the acquisition function over support locations $x_1, \ldots, x_m$ and coefficients $\alpha_1, \ldots, \alpha_m$. 
+%We can view this as adding an $L^0$ constraint $\Vert \vu \Vert_0 \leq M$ to the search problem, where
+%\begin{equation}
+%    \Vert \vu \Vert_0 \;=\; \min_m \;\textrm{s.t.}\; \vu \in \mathcal{M}^m.
+%\end{equation}
+
+\paragraph{Natural Gradient on the Manifold.}
+A subtlety arises when one optimizes over $\mathcal{M}^m$ via a parameterization $\phi : \R^l \to \Hs$. The geometry that matters for the acquisition functional lives in $\Hs$, but a naive optimizer in the parameter space $\R^l$ uses the Euclidean metric, which is in general unrelated to $\Hs$-distance.
+Equal Euclidean steps in $\R^l$ correspond to unequal $\Hs$-displacements, so a standard Euclidean gradient takes a step that is not aligned with the steepest direction on the manifold.
+The classical remedy is the natural gradient \citep{amari1998natural}. Recall that gradient descent can be derived as the repeated solution of quadratic problems of the form:
+\begin{equation}
+    w_{t+1} = \underset{w}{\operatorname{argmin}}\; f(w_t) + \nabla f(w_t)\transposed (w - w_t) + \frac{1}{2\lambda}\norm{w - w_t}_2^2,
+\end{equation}
+which yields the update $w_{t+1} = w_t - \lambda \nabla f(w_t)$. Replacing the squared Euclidean distance with a non-Euclidean dissimilarity $D(w, w_t)^2$ produces the natural gradient update
+\begin{equation}
+    w_{t+1} = w_t - \lambda G^{-1} \nabla f(w_t),
+\end{equation}
+where $G$ is the metric tensor associated with $D$.
+
+For a smooth parameterization $\phi: \R^l \to \Hs$, the natural choice of $D$ is the $\Hs$-distance pulled back through $\phi$: $D(w, w') = \norm{\phi(w) - \phi(w')}_\Hs$. The resulting metric is the \emph{pullback metric} with metric tensor
+\begin{equation}
+    G_{ij}(w) = \inner{\partial_i \phi_w}{\partial_j \phi_w}_\Hs,
+    \label{eq:pullback}
+\end{equation}
+which can be expressed as the cross-partial derivative of the \gls{rkhs} inner product:
+\begin{equation}
+    G_{ij}(w) = \partialover{v_i}\partialover{v'_j}\inner{\phi(v)}{\phi(v')}_\Hs \bigg|_{v=v'=w}.
+    \label{eq:pullback_autodiff}
+\end{equation}
+This formula reduces computation of the metric tensor to differentiating a scalar function of $v$ and $v'$, which can be handled by any autodifferentiation framework, regardless of the choice of parameterization.
+
+\paragraph{Canonical Parameterization.}
+The simplest concrete choice is the canonical representation with a fixed number $m$ of support points:
+\begin{equation}
+    \phi(w) = \sum_{i=1}^m \alpha_i \kernelH(\cdot, x_i), \qquad w = (\alpha, x) \in \R^m \times \R^{m \times d}.
+\end{equation}
+The \gls{rkhs} inner product between two such functions is
+\begin{equation}
+    \inner{\phi(v)}{\phi(v')}_\Hs = \alpha\transposed K(x, x') \alpha',
+\end{equation}
+where $K(x, x')_{ij} = \kernelH(x_i, x'_j)$. The pullback metric tensor has block structure
+$
+    G = \begin{pmatrix} G_{\alpha\alpha} & G_{\alpha x} \\ G_{x\alpha} & G_{xx} \end{pmatrix},
+$
+where each block is obtained by differentiating $\alpha\transposed K(x, x') \alpha'$ in $(\alpha, x)$ and $(\alpha', x')$ . 
+
+Crucially, this parameterization keeps the candidate $\phi(w)$ sparse with exactly $m$ support points at all times, and allows joint optimization over both coefficients and locations.
+
+\paragraph{Bounded Parameterization.}
+If additional properties are desired, such as boundedness of the candidate function, an alternative parameterization can be used. Instead of parameterizing directly by $(\alpha, x)$, we use an implicit parameterization $(y, x)$ where $y \in [y_{\min}, y_{\max}]^m$ are the (approximate) function values at the support points. The coefficients are derived via
+\begin{equation}
+    \alpha = (K_{xx} + \varepsilon I)^{-1} y.
+\end{equation}
+This gives $\phi_w(x) = K_{xx}\alpha = K_{xx}(K_{xx} + \varepsilon I)^{-1} y \approx y$ when the support points are sufficiently far apart, while the $\varepsilon$-regularization shifts all eigenvalues of $K_{xx}$ by $\varepsilon$ to ensure that $\alpha$ is well defined even when $K_{xx}$ is near-singular. Boundedness of $\phi(w)$ at the support points is enforced by constraining $y \in [y_{\min}, y_{\max}]^m$. The pullback metric for this parameterization follows from \cref{eq:pullback_autodiff}.
+
+\paragraph{Quasi-Newton Optimization.}
+Although natural gradient descent provides a geometrically motivated update, the standard practice in \gls{bo} is to use a quasi-Newton method such as L-BFGS-B \citep{byrd1995lbfgsb}, which builds an empirical preconditioner on top of the one provided by the natural gradient. We found this to give strong empirical performance on the resulting finite-dimensional problem (see \cref{app:natural_gradient}). The bounded parameterization enforces box constraints on $y$, and modern autodifferentiation frameworks compute the gradient with respect to $(y, x)$ at negligible cost. We use multi-start L-BFGS-B in all experiments.
+
+\paragraph{Recovering the Updates of \cite{vien2018bayesian}.}
+The proposed framework includes the gradient descent procedure of \cite{vien2018bayesian} as a special case. They show that for a surrogate \gls{gp} with squared exponential kernel $\kernelGP(\vu, \vu') = e^{-\frac{1}{2\ell}\norm{\vu-\vu'}_\Hs^2}$, the Fr\'echet derivative of $\kernelGP$ with respect to $\vu$ is the linear functional
+\begin{equation}
+    D_\vu \kernelGP(\vu, \vu') = -\frac{\kernelGP(\vu, \vu')}{\ell}\inner{\cdot}{\vu - \vu'}_\Hs,
+\end{equation}
+whose Riesz representer in $\Hs$ is $-\frac{\kernelGP(\vu, \vu')}{\ell}(\vu - \vu')$. For $\vu = \sum_{i=1}^{m_\vu} \alpha_i \kernelH(\cdot, x_i)$ and $\vu' = \sum_{i=1}^{m_{\vu'}} \alpha'_i \kernelH(\cdot, x'_i)$, this representer lies in $\Hs$ with support points given by the union of those of $\vu$ and $\vu'$. Consequently, starting from $\vu_0$, after $t$ steps of gradient descent the candidate $\vu_t$ accumulates the support points of all previously observed candidates:
+\begin{equation}
+    \vu_t = \sum_{i=1}^{m_{\vu_0}} \beta_i \kernelH(\cdot, x_i) + \sum_{\vu' \in \mathcal{D}}\sum_{i=1}^{m_{\vu'}} \beta_{\vu',i} \kernelH(\cdot, x'_i).
+\end{equation}
+To interpret this as natural gradient descent, fix the support set $\{x_i\}_{i=1}^m$ to the union of all observed candidates and consider the parameterization:
+\begin{equation}
+    \phi(w) = \sum_{i=1}^m w_i \kernelH(\cdot, x_i), \qquad w \in \R^m.
+\end{equation}
+The pullback metric tensor of \cref{eq:pullback} for this parameterization is:
+\begin{equation}
+    G_{ij} = \inner{\partial_i \phi}{\partial_j \phi}_\Hs = \inner{\kernelH(\cdot, x_i)}{\kernelH(\cdot, x_j)}_\Hs = \kernelH(x_i, x_j),
+\end{equation}
+i.e.\ $G$ is the kernel matrix of $\kernelH$ evaluated on the fixed support set. Substituting $\vu = \phi(w)$ and $\vu' = \phi(w')$, the squared norm reduces to $\norm{\phi(w) - \phi(w')}_\Hs^2 = (w - w')^\top G (w - w')$, and the Euclidean gradient with respect to $w$ is:
+\begin{equation}
+    \nabla_w \kernelGP(\phi(w), \phi(w')) = -\frac{\kernelGP(\phi(w), \phi(w'))}{\ell} \, G(w - w').
+\end{equation}
+The update direction of \cite{vien2018bayesian}, expressed as a coefficient vector in this parameterization, is instead $-\frac{\kernelGP(\phi(w), \phi(w'))}{\ell}(w - w')$, which is exactly the Euclidean gradient premultiplied by $G^{-1}$. The updates of \cite{vien2018bayesian} are therefore equivalent to natural gradient descent in this parameterization.
+
+\section{Experimental Results}
+\label{sec:experiments}
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.49\textwidth]{figures/f_visualizations/brachistochrone_path.pdf}
+    \includegraphics[width=0.49\textwidth]{figures/f_visualizations/mnist_activations.pdf}
+    \caption{Learned brachistochrone paths (left) and MNIST activation functions (right). Transparent lines show individual runs; bold lines show the average across runs.}
+    \label{fig:f_vis}
+\end{figure}
+
+We compare \wycoff{} against \vien, \vellanky, \kundu, and \shilton, described in \cref{sec:related_work}.
+We evaluate on a diverse set of functional optimization problems spanning multiple input dimensions and problem complexities, including simple toy problems of function projection, ridge functions derived from classical \gls{bo} benchmarks, and more complex tasks like basic control problems and functional hyperparameter optimization.
+All targets are non-negative to enable log-scale plots, although the optimal achievable value is not necessarily exactly zero in all settings.
+
+We investigate two quantitative metrics of interest: the best target function value at the end of the optimization budget, and the average regret (or area under the curve) accumulated along the trajectory.
+For each metric, we report the median across runs together with a 95\% \gls{ci}.
+As a baseline, we report the value of the corresponding metric obtained following the same complexity schedule described in \cref{app:implementation} but without optimizing the acquisitions; this represents the performance obtainable by simply sampling from the \gls{rkhs} at random.
+Across the benchmarks reported in \cref{tab:regret}, \wycoff{} achieves the lowest average and final regret in the substantial majority of settings, and is competitive with the best alternative in the remaining cases.
+Further details on the experimental setup are provided in \cref{app:implementation}.
+
+\paragraph{Projections.}
+As a simple toy problem, we consider projecting a fixed target function $\tilde{f}$ onto the \gls{rkhs}.
+The objective is to minimize the \gls{mse} between the candidate function and the target.
+We use the \emph{sinc} function as the target, scaled and centered so that its main oscillations lie within the unit domain $[0,1]^d$:
+\begin{equation}
+    \tilde{f}(x) = \frac{1}{d}\sum_{i=1}^d \operatorname{sinc}\!\left(2 \pi x_i - \pi\right);
+    \quad
+    f(u) = \Vert \tilde{f} - u\Vert_{L^2} \,.
+\end{equation}
+We consider input dimensions $d \in \{1, 2, 3, 4\}$ to evaluate how the methods perform on a similar task at varying dimensionalities.
+Results are shown in \cref{fig:method_comparison_sinc}.
+
+\paragraph{Ridge Functions.}
+A large corpus of benchmark functions exists for standard \gls{bo}, but comparatively few for \gls{fbo}.
+We propose a systematic approach to adapt such benchmarks to the functional setting, extending the concept of \emph{ridge functions} to the functional domain.
+Given a scalar benchmark $\bar{f}:\R^d\to\R$ and a candidate function $\vu \in \Hs$, we define the functional benchmark as
+\begin{equation}
+    f(\vu) = \bar{f}\!\left(b + L[\vu]\right),
+\end{equation}
+where $b\in\R^d$ is a random bias and $L:\Hs\to\R^d$ is a vector of linear functionals, with each component given by:
+\begin{equation}
+    L_i[\vu] = \sum_j \inner{g_{ij}}{\vu}_\Hs,
+\end{equation}
+for some $g_{ij} \in \Hs$.
+If each $g_{ij}$ has a sparse representation $g_{ij} = a_{ij} \kernelH(\cdot, x_{ij})$ for some weight $a_{ij}\in\R$ and support point $x_{ij}\in[0,1]^d$, the reproducing property gives $\inner{g_{ij}}{\vu}_\Hs = a_{ij} \vu(x_{ij})$, and the functional benchmark reduces to an efficiently computable expression.
+If the test function $\bar{f}$ has a bounded domain, we apply a soft squish to ensure that its inputs lie in the correct range.
+
+We provide a \textsc{jax}~\citep{jax2018github} compatible open-source implementation of the virtual library of \cite{surjanovic2013virtual}, comprising more than 70 benchmark functions, together with the functional ridge extension.
+In this work we consider four popular benchmarks of increasing input dimensionality: \emph{GramacyLee} ($d=1$), \emph{Ackley} ($d=2$), \emph{Hartmann} ($d=3$), and \emph{Rosenbrock} ($d=4$).
+Results are shown in \cref{fig:method_comparison_benchmarks}.
+
+\paragraph{Real World Tasks.}
+We next consider problems where the functional parameter has a direct physical or model interpretation.
+The \emph{Brachistochrone} problem asks for the curve $y:[0,1]\to\R$ passing through two given points such that a bead placed at the start point and sliding along it under gravity reaches the end in the minimum time.
+The optimal solution is known to be a cycloid and the optimal travel time is known.
+%However, no closed-form expression $y(x)$ exists, as the cycloid is defined only implicitly via parametric equations.
+Efforts to analytically solve the Brachistochrone problem precipitated the development of variational analysis, and we think this makes the Brachistochrone a suitable testbed for \gls{fbo}.
+We optimize for the travel time in excess of that of the cycloid.
+
+The second benchmark is the optimization of the activation function of a neural network. A better activation can speed up convergence and increase accuracy. We train a simple \gls{mlp} with two hidden layers of 256 neurons on the MNIST digit recognition task \citep{lecun1998mnist}. Our setup differs slightly from \cite{vien2018bayesian}: we measure the average test accuracy across multiple training runs rather than a single seed, and instead of optimizing for the activation directly, we optimize an offset relative to the popular ReLU activation.
+
+We also consider two control tasks where the policy itself is the functional parameter being optimized. The first is the classic underactuated pendulum environment from OpenAI Gym \citep{brockman2016openai}, where the objective is to swing up and balance the pendulum by applying a torque $\vu:\R^2\to\R$ as a function of the current angle and angular velocity. The objective is the expected cumulative reward over an episode, evaluated over 50 rollouts.
+This problem is more challenging than the typical \gls{rl} setting since we are optimizing the policy without access to state transitions; gradient-based policy optimization cannot be applied.
+
+The second is a more complex environment in which a double-jointed robot arm must interact with a pinwheel and rotate it to a given target angle. The policy is a zero-force (i.e., desired) trajectory of the shoulder joint $\vu:[0,1]\to\mathbb{R}$ for a joint-space impedance controller \cite{hermus2021exploiting}. The stiffness and damping parameters in the controller are fixed, as well as the zero-force equilibrium point of the elbow joint. 
+The objective is the cosine distance between the final pinwheel angle and the desired one.
+This problem is a well-known challenging trajectory optimization problem, as the double-jointed robot arm should make contact with and detach from the pinwheel multiple times while respecting the arm's kinematics. Solving such a hybrid optimization problem (i.e., finding both continuous motions and a discrete contact sequence) involves significant challenges to standard solvers due to the discontinuity of the gradient at the contact transitions~\cite{posa2014direct}.
+%
+Results are shown in \cref{fig:method_comparison_realworld}.
+
+
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}{\textwidth}
+        \centering
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc1d}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc2d}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc3d}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc4d}
+        \caption{Projections.}
+        \label{fig:method_comparison_sinc}
+    \end{subfigure}
+    \\
+    \begin{subfigure}{\textwidth}
+        \centering
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/gramacylee}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/ackley}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/hartmann}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/rosenbrock}
+        \caption{Functional Ridges.}
+        \label{fig:method_comparison_benchmarks}
+    \end{subfigure}
+    \\
+    \begin{subfigure}{\textwidth}
+        \centering
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/brachistochrone}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/pendulum}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/pinwheel}
+        \includegraphics[width=0.24\textwidth]{figures/method_comparison/mnist}
+        \caption{Real-world Tasks.}
+        \label{fig:method_comparison_realworld}
+    \end{subfigure}
+    \caption{Method comparison across benchmark functions. Each plot shows the running best target function value (median and 95\% \gls{ci}) as a function of the number of acquisitions.}
+    \label{fig:method_comparison}
+\end{figure}
+
+\input{tables/results_combined_ci}
+
+\section{Discussion, Conclusion and Future Work}
+
+We proposed a new method for \gls{fbo} which optimizes over a sparse sub-manifold of an \gls{rkhs}, jointly searching over basis point locations and coefficients. We showed that the gradient descent procedure of \cite{vien2018bayesian} is equivalent to natural gradient descent in a finite-dimensional parameter space, and that this perspective generalizes to any smooth parameterization. We deployed our method on a range of synthetic and real-world benchmarks, finding that it consistently matches or outperforms existing methods.
+
+Our experiments use a fixed complexity schedule shared across all methods. While this choice was made to allow a fair comparison, it is possible that some methods would benefit from a tailored schedule, and finding a consistent scheduling strategy is important future work. Additionally, our grid of selected \gls{rkhs} kernel and lengthscale grid is relatively coarse, and a more thorough exploration may reveal a stronger configuration for one or more comparators.
+Finally, the optimization landscape of the acquisition function over the joint $(\alpha, x)$ space is highly non-convex, and although multi-start L-BFGS-B works well in practice, we have no guarantee of finding the global optimum.
+
+We see several promising directions for future work. First, the choice of complexity $m$ is currently a hyperparameter; an adaptive schedule which grows $m$ as the optimization progresses, or which selects $m$ based on the data, would be a natural extension. Second, our framework treats each acquisition independently; warm-starting the optimization from previously good candidates may further improve sample efficiency. Third, the natural gradient perspective opens up the use of other parameterizations, including those which enforce structural priors such as monotonicity or periodicity. Finally, the empirical success of our method on control problems suggests that \gls{fbo} may be a viable strategy for policy optimization in low-data regimes; a more thorough study of this application is warranted.
+
+\bibliographystyle{plain}
+\bibliography{references}
+\newpage
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Gaussian Process Kernel Profile}
+\label{app:kernel_profile}
+
+The profile of the surrogate \gls{gp} kernel determines the smoothness assumptions placed on the target functional $f$.
+In standard finite-dimensional \gls{bo}, the target is commonly assumed to be at least once differentiable, and the \gls{rbf} or Mat\'ern-5/2 kernel is a natural default.
+In the functional domain, however, $f$ maps functions to scalars and need not inherit the regularity of the underlying function space; for instance, evaluation-based objectives such as travel time or cumulative reward can be discontinuous as a function of the \gls{rkhs} distance between candidates.
+This motivates considering rougher kernels, including Mat\'ern-3/2 and Mat\'ern-1/2, as surrogate priors.
+
+\Cref{fig:kernel_profile_ablation} shows the performance of \wycoff{} under each of the four kernel profiles across all benchmarks.
+On several benchmarks, particularly among the real-world tasks, rougher kernels such as Mat\'ern-3/2 and Mat\'ern-1/2 yield measurably better performance than the smooth \gls{rbf} baseline, consistent with the idea that the target functional may not be smooth as a function of \gls{rkhs} distance even when the candidate functions themselves are smooth.
+That said, the differences across profiles are generally moderate rather than dramatic: no single profile dominates uniformly, and the ranking varies across benchmarks without a clear systematic pattern.
+
+Qualitatively similar conclusions hold for the other methods considered in this work, suggesting that the sensitivity to kernel profile is a property of the \gls{fbo} problem class rather than of any particular algorithm.
+Overall, the kernel profile is an important hyperparameter that practitioners should not ignore, but it is not a critical one: reasonable performance is obtainable across the full range of profiles considered, and the largest gains from careful tuning are concentrated in a subset of benchmarks.
+In the main experiments of \cref{sec:experiments}, each method is evaluated at the profile that achieves the lowest final regret for that method and benchmark combination, as reported in \cref{tab:hyperparams}, ensuring that no method is penalized by a suboptimal kernel choice.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc1d}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc2d}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc3d}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc4d}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/gramacylee}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/ackley}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/hartmann}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/rosenbrock}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/brachistochrone}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/pendulum}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/pinwheel}
+    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/mnist}
+    \caption{Effect of the \gls{gp} kernel profile across benchmark functions. Each line corresponds to a different smoothness assumption on the surrogate.}
+    \label{fig:kernel_profile_ablation}
+\end{figure}
+
+\section{\gls{rkhs} Kernel Scale and Continuity Priors}
+\label{app:ablations}
+
+Following the previous literature, we use an \gls{rkhs} with an \gls{rbf} kernel.
+The lengthscale parameter $\ell$ determines which functions admit a sparse approximation, and therefore changes the optimization landscape.
+Since the optimal lengthscale is task-specific rather than method-specific, we consider a log-uniform grid of values $\{0.4, 0.2, 0.1, 0.05\}$. The optimal lengthscale is taken to be the one for which the best target function value is achieved (across all runs and all methods).
+
+The surrogate \gls{gp} kernel also plays a role.
+The choice of kernel defines the prior on the smoothness of the surrogate model.
+We consider four profiles: \gls{rbf}, Mat\'ern-5/2, Mat\'ern-3/2, and Mat\'ern-1/2, corresponding respectively to $\mathcal{C}^\infty$, $\mathcal{C}^2$, $\mathcal{C}^1$, and $\mathcal{C}^0$ surrogate models.
+Unlike standard \gls{bo}, where the target function is often assumed to be at least differentiable, in the functional domain the target may be discontinuous, making rougher kernels potentially more appropriate.
+
+The optimal profile may vary not only across target functions but also across methods, so we tune this independently for each method, showing each approach at its best.
+The selected lengthscales and profiles for each setting are reported in \cref{tab:hyperparams}.
+
+\input{tables/best_lengthscales}
+
+\section{Effect of Natural Gradient}
+\label{app:natural_gradient}
+
+\Cref{fig:gradient_ablation_vien} compares the optimization trajectories obtained when running the procedure of \cite{vien2018bayesian} with and without the natural gradient preconditioner.
+As established in \cref{sec:methodology}, the original updates of \cite{vien2018bayesian} correspond to natural gradient descent in a finite-dimensional parameter space; here we ablate the role of the preconditioner directly.
+
+The L-BFGS-B optimizer already builds an empirical approximation to the inverse Hessian from gradient history, which in practice subsumes much of the correction that the pullback metric $G^{-1}$ would otherwise provide.
+
+For \vien{}, the difference between running with and without the natural gradient preconditioner is minimal across benchmarks: the trajectories are nearly indistinguishable, and no consistent advantage is observed in either direction.
+For \wycoff{}, where the parameterization jointly optimizes over support locations $x$ and coefficients $\alpha$, applying the natural gradient preconditioner on top of L-BFGS-B mildly \emph{hurts} performance relative to running L-BFGS-B directly.
+These results are consistent with quasi-newton methods being effectively able to learn the proper metric such that explicitly using the preconditioner is superfluous. 
+
+The natural gradient remains a theoretically illuminating lens through which to interpret existing methods, as discussed in \cref{sec:methodology}, but it does not translate to a practical advantage when a quasi-Newton optimizer is already in use.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc1d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc2d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc3d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc4d}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/gramacylee}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/ackley}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/hartmann}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/rosenbrock}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/brachistochrone}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/pendulum}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/pinwheel}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/mnist}
+    \caption{Effect of natural gradient preconditioning for \vien{} across benchmark functions.}
+    \label{fig:gradient_ablation_vien}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc1d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc2d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc3d}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc4d}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/gramacylee}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/ackley}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/hartmann}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/rosenbrock}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/brachistochrone}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/pendulum}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/pinwheel}
+    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/mnist}
+    \caption{Effect of natural gradient preconditioning for \wycoff{} across benchmark functions.}
+    \label{fig:gradient_ablation_wycoff}
+\end{figure}
+
+
+
+
+\section{Initial Candidate Distribution}
+\label{app:sampling_ablation}
+
+At each acquisition step, the L-BFGS-B optimizer is initialized from a set of $16$ candidate starting points,
+selected as the top $16$ out of $1024$ initial guesses evaluated on the acquisition function.
+The default strategy samples these $1024$ guesses via \gls{lhs} in the parameter space, as described in \cref{app:implementation}.
+Following \cite{shilton2020sequential}, an alternative is to draw the initial guesses from the surrogate \gls{gp} prior.
+
+\Cref{fig:sampling_ablation} compares these two sampling strategies for \wycoff{} across all benchmarks, overlayed with \shilton{} for reference.
+In the early acquisitions, the choice of initial candidate distribution produces a visible difference: prior-based sampling can lead to better or worse starting points depending on how suitable the \gls{gp} prior is for the given test function.
+However, this early discrepancy does not persist: as the number of acquisitions grows, the two strategies converge to nearly identical trajectories across almost all benchmarks.
+This is consistent with the expectation that, given a sufficiently good acquisition optimizer, the final solution found by L-BFGS-B is determined by the acquisition landscape rather than by the initialization, and the top-$16$ selection already filters out poor starting points effectively.
+
+These results suggest that the initial candidate distribution is not a critical design choice for \gls{fbo}: the acquisition optimization is robust enough that the long-run performance is insensitive to it.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc1d}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc2d}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc3d}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc4d}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/gramacylee}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/ackley}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/hartmann}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/rosenbrock}
+    \\
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/brachistochrone}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/pendulum}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/pinwheel}
+    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/mnist}
+    \caption{Effect of the initial candidate distribution across benchmark functions.}
+    \label{fig:sampling_ablation}
+\end{figure}
+
+\section{Implementation Details}
+\label{app:implementation}
+
+The surrogate \gls{gp} is fit by maximum likelihood estimation of the lengthscale $\ell$ and nugget $g$, with the optimal trend $b$ and scale $\nu$ estimated analytically. For \wycoff, \vien, \kundu, and \shilton, the surrogate takes functional inputs $\vu$ with a stationary kernel defined on \gls{rkhs} distances $\|\vu - \vu'\|_\Hs$. For \vellanky, the surrogate works directly on the Bernstein polynomial coefficients, bypassing the \gls{rkhs} representation entirely.
+
+The acquisition function used follows the numerically stable log-\gls{ei} implementation of \cite{ament2024logei}.
+All methods use the same acquisition optimization strategy: given $1024$ initial candidates sampled via \gls{lhs}, the acquisition loss is evaluated at each candidate and the top $16$ are selected as starting points for L-BFGS-B optimization with \texttt{maxiter}$=100$, \texttt{ftol}$=\sqrt{\varepsilon_{\textrm{machine}}}$, and \texttt{gtol}$=0$. The best result across restarts is returned.
+
+Since the surrogate \gls{gp} operates on \gls{rkhs} distances, it can be fit on functional inputs with varying numbers of support points. Therefore the complexity of candidate points can vary across acquisition steps.
+Finding the optimal complexity schedule is beyond the scope of this work. For our evaluation we adopt a fixed schedule, shared across all methods. The parameter $k$ is taken to represent the size of the acquisition optimization problem: $k$ is the subspace dimension for \kundu{} and \shilton, the number of support points for \vien{} and \wycoff, and the polynomial degree for \vellanky.
+We evaluate all methods on a fixed budget of $110$ function evaluations, beginning with 10 initial candidates sampled via \gls{lhs}, followed by 10 sequential acquisitions at each complexity level $k \in \{1, \ldots, 10\}$.
+The \random{} baseline follows the same schedule but skips surrogate modeling, using \gls{lhs} for all acquisitions.
+
+The experimental evaluation involves 40k+ indivudual runs and has been carried out on a slurm environment and we provide a bash script to reproduce the entire experimental sweep, including preset time and memory requirements. The evaluation took 2 days over 500 parallel jobs. Each individual run can be easily reproduced on consumer laptops, with running times ranging from a couple of minutes for the simpler ones, to a few hours for NN training and control simulations.
+
+All benchmarks operate in the same function space, optimizing over candidate functions $\vu:[0,1]^d\to[-1,1]$.
+To avoid discrepancies arising from differing input-output domains, additional care is needed to homogenize representation across methods.
+
+\paragraph{\vien.}
+Initial candidates are sampled via the distribution induced by \gls{lhs} and the bounded parameterization with $k_{\min}$ support points.
+At each acquisition step, new candidate functions are first sampled via \gls{lhs} with $k$ support points.
+Each candidate is then expanded to include the union of all historical observation support points $\{x_i\}$, with zero coefficients appended for the new points.
+The function values at all expanded support points are soft-squished to $[-1,1]$ using a scaled logistic function.
+Given this final step, the induced metric is no longer exactly given by the canonical \gls{rkhs} inner product. We compute it using the general pullback formula.
+After optimization, \gls{kmp} \citep{vincent2002kernel} is applied to sparsify the result to exactly $k$ support points before target evaluation.
+
+\paragraph{\kundu.}
+The basis functions for the random subspace are sampled with $k_{\max}$ support points throughout.
+At each acquisition step a fresh random subspace of dimension $k$ is constructed by sampling $k$ basis functions via the distribution induced by \gls{lhs} and the bounded parameterization.
+The candidate is a linear combination of these basis functions with coefficients $c \in [-1,1]$, obtained by concatenating the support points and coefficients of all basis functions.
+The corresponding $y$ values are computed and soft-squished to enforce the $[-1,1]$ range. 
+The final candidate is reconstructed using the squished values.
+
+\paragraph{\shilton.}
+At each acquisition step, a fresh random subspace of dimension $k$ is constructed by sampling $k$ basis functions from the surrogate \gls{gp} prior on a fixed grid of $n=50$ points in $[0,1]^d$. The original paper suggests using $n=100$, but we found that denser grids led to numerical instability.
+The subspace is centered at the current best observed function $\vu^* = \arg\min_{\vu \in \mathcal{D}} f(\vu)$.
+The $y$ values of the linear combination at the support points are soft-squished to $[-1,1]$, and the final candidate is reconstructed via the bounded parameterization.
+
+\paragraph{\vellanky.}
+Candidates are represented as Bernstein polynomials of degree $k$ with coefficients $c \in [-1,1]^{k+1}$, sampled via \gls{lhs} and rescaled to $[-1,1]^{k+1}$.
+At evaluation time, the input is soft-squished to map to $[0,1]$ in order to make the method usable on the one-dimensional benchmarks.
+When the complexity level $k$ increases, all existing observations are lifted to degree $k$ via the exact Bernstein degree elevation recurrence:
+$c^{(n+1)}_i = \frac{i}{n+1} c^{(n)}_{i-1} + \left(1 - \frac{i}{n+1}\right) c^{(n)}_i$.
+The surrogate \gls{gp} is fit from scratch on the lifted coefficients.
+This method only supports $d=1$.
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\FloatBarrier
+\newpage
+\input{checklist.tex}
+
+
+\end{document}

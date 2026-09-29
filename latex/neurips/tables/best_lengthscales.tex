@@ -1,0 +1,33 @@
+\begin{table}[h]
+\centering
+\caption{Best hyperparameters per method and benchmark function.
+The \gls{gp} kernel determines the order of differentiability $\mathcal{C}(\nu)$ of the surrogate model ($\mathcal{C}(\infty)$ = RBF).
+The \gls{rkhs} lengthscale $\ell$ determines which candidate functions admit a sparse approximation.}
+\label{tab:hyperparams}
+\renewcommand{\arraystretch}{1.2}
+\small
+\begin{tabular}{l | c | cccc}
+\toprule
+\multirow{2}{*}{\textbf{benchmark}}  & \multirow{2}{*}{\textbf{\gls{rkhs} scale}} & \multicolumn{4}{c}{\textbf{Surrogate kernel}} \\
+&  & \textbf{\wycoff} & \textbf{\kundu} & \textbf{\vien} & \textbf{\shilton} \\
+\midrule
+\midrule
+\textbf{Sinc-1D}         & $0.05$ & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        \\
+\textbf{Sinc-2D}         & $0.1$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(2)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(\infty)$   \\
+\textbf{Sinc-3D}         & $0.2$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        & $\mathcal{C}(\infty)$   \\
+\textbf{Sinc-4D}         & $0.4$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        & $\mathcal{C}(1)$        \\
+\midrule
+\midrule
+\textbf{GramacyLee}      & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(0)$        & $\mathcal{C}(2)$        \\
+\textbf{Ackley}          & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(0)$        \\
+\textbf{Hartmann}        & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(\infty)$   \\
+\textbf{Rosenbrock}      & $0.4$  & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   \\
+\midrule
+\midrule
+\textbf{Brachistochrone} & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(2)$        & $\mathcal{C}(0)$        & $\mathcal{C}(1)$        \\
+\textbf{MNIST}           & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(0)$        \\
+\textbf{Pendulum}        & $0.2$  & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   \\
+\textbf{Pinwheel}        & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        \\
+\bottomrule
+\end{tabular}
+\end{table}
