@@ -9,12 +9,12 @@
 <header><div><h1>Whip task / Bayesian optimization</h1><div class="sub"><span id="method-label"></span> · Matern-5/2 · <span id="model-label">m=1</span> · animation follows seed <b id="seed-label">-</b></div></div><div><div class="targets" id="models"></div><div class="targets" id="tasks"></div></div></header>
 <div class="grid">
 <section class="panel"><h2 id="scene-title">Whip</h2><div class="meta"><span>acquisition <b id="step">1</b> / <b id="count">-</b> <span id="inflight"></span></span><span>objective <b id="value">-</b></span><span>target <b id="target-pos">-</b></span><span>paper move <b id="paper-value">-</b> in <b id="paper-iters">-</b> DIRECT-L iterations</span></div><div id="scene"></div><div class="controls"><button id="play">Play</button><input id="frame" type="range" min="0" max="47" value="0" aria-label="Animation frame"><span id="time">0.00 s</span></div><div class="legend"><span><i class="sw" style="border-color:#2878d6"></i>arm</span><span><i class="sw" style="border-color:#e76834"></i>whip</span><span><i class="sw" style="border-color:#c94848"></i>target</span><span><i class="sw" style="border-color:#b8b8b0;border-top-style:dashed"></i>paper move</span><button id="paper-toggle" style="padding:2px 8px;margin-left:auto">Hide paper</button></div></section>
-<section class="panel"><h2>Optimization trace</h2><div class="meta"><span>seeds <b id="seeds-count">-</b></span><span>finished <b id="seeds-done">-</b></span><span>best final <b id="best-final">-</b></span><span>median final <b id="median-final">-</b></span></div><div id="trace" style="height:400px"></div><div class="controls"><span>acquisition step</span><input id="acq" type="range" min="0" max="0" value="0"><b id="acq-label">1</b></div><div class="hint">Points are the animated seed's evaluations; thin lines are every seed's running best, the thick line their median. Click a point or drag the slider to inspect that candidate.</div></section>
+<section class="panel"><h2>Optimization trace</h2><div class="meta"><span>seeds <b id="seeds-count">-</b></span><span>finished <b id="seeds-done">-</b></span><span>best final <b id="best-final">-</b></span><span>median final <b id="median-final">-</b></span></div><div id="trace" style="height:400px"></div><div class="controls"><span>acquisition step</span><input id="acq" type="range" min="0" max="0" value="0"><b id="acq-label">1</b><button id="log-toggle" style="padding:2px 8px">Log y</button></div><div class="hint">Points are the animated seed's evaluations; thin lines are every seed's running best, the thick line their median. Click a point or drag the slider to inspect that candidate.</div></section>
 </div></main>
 <script>
 const DATA=/*__DATA__*/;
 const TASKS=Object.keys(DATA.tasks),MODELS=[1,2,4];
-let model=1,task=TASKS[0],acq=0,frame=0,playing=false,dragMode='orbit',traceKey=null;
+let model=1,task=TASKS[0],acq=0,frame=0,playing=false,playStart=0,playFrame0=0,dragMode='orbit',traceKey=null;
 const $=id=>document.getElementById(id);const plotConfig={responsive:true,displaylogo:false,displayModeBar:true};
 const fmt=v=>Number(v).toFixed(4);
 const run=()=>DATA.runs[task]&&DATA.runs[task][model];
@@ -25,7 +25,8 @@ function button(box,label,active,onclick){const b=document.createElement('button
 for(const m of MODELS)button($('models'),'m='+m,m===model,()=>{model=m;acq=0;frame=0;sync()});
 for(const t of TASKS)button($('tasks'),DATA.tasks[t].label,t===task,()=>{task=t;acq=0;frame=0;sync()});
 
-let showPaper=true;$('paper-toggle').onclick=()=>{showPaper=!showPaper;$('paper-toggle').textContent=showPaper?'Hide paper':'Show paper';sync()};
+let showPaper=true,logScale=false;$('log-toggle').onclick=()=>{logScale=!logScale;$('log-toggle').textContent=logScale?'Linear y':'Log y';const r=run();if(r)drawTrace(r)};
+$('paper-toggle').onclick=()=>{showPaper=!showPaper;$('paper-toggle').textContent=showPaper?'Hide paper':'Show paper';sync()};
 function setDragMode(mode){dragMode=mode;$('drag-mode').textContent=mode;Plotly.relayout('scene',{'scene.dragmode':mode})}
 function rotateCamera(){const gd=$('scene');const eye=(gd.layout.scene&&gd.layout.scene.camera&&gd.layout.scene.camera.eye)||{x:1.5,y:1.5,z:1.1};const angle=Math.PI/8;const c=Math.cos(angle),s=Math.sin(angle);setDragMode('orbit');Plotly.relayout(gd,{'scene.camera.eye':{x:c*eye.x-s*eye.y,y:s*eye.x+c*eye.y,z:eye.z}})}
 const cameraControls=document.createElement('div');cameraControls.className='controls';cameraControls.innerHTML='<span>camera drag: <b id="drag-mode">orbit</b></span><button>Orbit</button><button>Pan</button>';$('scene').after(cameraControls);cameraControls.children[1].onclick=rotateCamera;cameraControls.children[2].onclick=()=>setDragMode('pan');
@@ -54,8 +55,8 @@ function drawTrace(r){
   if(paper){
     traces.push({x:[1,DATA.budget],y:[paper.y,paper.y],mode:'lines',line:{color:'#b8b8b0',width:2,dash:'dash'},name:'paper move',hoverinfo:'skip'});
     if(paper.directBest)traces.push({x:paper.directBest.map((_,i)=>i+1),y:paper.directBest,mode:'lines',line:{color:'#8a7fb8',width:2},name:'DIRECT-L running best (our port)',hovertemplate:'eval %{x}<br>best=%{y:.4f}<extra></extra>'});
-    else if(paper.iterations)traces.push({x:[paper.iterations,paper.iterations],y:[0,Math.max(...a.y)],mode:'lines',line:{color:'#b8b8b0',width:2,dash:'dot'},name:'paper converged ('+paper.iterationsLabel+' iters)',hoverinfo:'skip'})}
-  Plotly.react('trace',traces,{margin:{l:55,r:18,t:8,b:48},paper_bgcolor:'#fcfcfb',plot_bgcolor:'#fcfcfb',xaxis:{title:'acquisition step / DIRECT-L evaluation',gridcolor:'#deded6',range:[0,DATA.budget+1]},yaxis:{title:'objective y',gridcolor:'#deded6'},showlegend:true,legend:{orientation:'h',y:1.1}},plotConfig);
+    else if(paper.iterations)traces.push({x:[paper.iterations,paper.iterations],y:[Math.min(...a.y),Math.max(...a.y)],mode:'lines',line:{color:'#b8b8b0',width:2,dash:'dot'},name:'paper converged ('+paper.iterationsLabel+' iters)',hoverinfo:'skip'})}
+  Plotly.react('trace',traces,{margin:{l:55,r:18,t:8,b:48},paper_bgcolor:'#fcfcfb',plot_bgcolor:'#fcfcfb',xaxis:{title:'acquisition step / DIRECT-L evaluation',gridcolor:'#deded6',range:[0,DATA.budget+1]},yaxis:{title:'objective y',gridcolor:'#deded6',type:logScale?'log':'linear'},showlegend:true,legend:{orientation:'h',y:1.1}},plotConfig);
   const gd=$('trace');if(!gd.clickBound){gd.clickBound=true;gd.on('plotly_click',e=>{const p=e.points[0];if(p.curveNumber===0){acq=p.pointIndex;frame=0;sync()}})}}
 
 function clear(msg){['step','count','value','target-pos','time','seed-label','seeds-count','seeds-done','best-final','median-final'].forEach(id=>$(id).textContent='-');$('value').textContent=msg;$('inflight').textContent='';Plotly.react('scene',[],{margin:{l:0,r:0,t:0,b:0},paper_bgcolor:'#f8f8f5'},plotConfig);Plotly.react('trace',[],{margin:{l:55,r:18,t:8,b:48},paper_bgcolor:'#fcfcfb'},plotConfig);traceKey=null}
@@ -70,13 +71,14 @@ function sync(){
   $('value').textContent=fmt(a.y[acq]);$('target-pos').textContent='('+info.target.map(v=>v.toFixed(2)).join(', ')+')';
   $('seeds-count').textContent=seeds.length;$('seeds-done').textContent=done+' / '+seeds.length;
   $('best-final').textContent=fmt(Math.min(...seeds.map(s=>s.best[s.best.length-1])));$('median-final').textContent=fmt(r.median[r.median.length-1]);
-  $('acq').max=a.y.length-1;$('acq').value=acq;$('acq-label').textContent=acq+1;$('frame').value=frame;
+  $('acq').max=a.y.length-1;$('acq').value=acq;$('acq-label').textContent=acq+1;$('frame').max=r.poses[pose].length-1;$('frame').value=frame;
   $('time').textContent=(frame/(r.poses[pose].length-1)*info.horizon).toFixed(2)+' s';
   drawScene(r);
   if(traceKey!==model+'/'+task){traceKey=model+'/'+task;drawTrace(r)}}
 
 $('acq').oninput=e=>{acq=+e.target.value;frame=0;sync()};$('frame').oninput=e=>{frame=+e.target.value;sync()};
-$('play').onclick=()=>{const r=run();if(!r)return;if(frame>=r.poses[poseIndex(r,acq)].length-1)frame=0;playing=!playing;$('play').textContent=playing?'Pause':'Play'};
-function tick(){const r=run();if(playing&&r){const last=r.poses[poseIndex(r,acq)].length-1;if(frame<last){frame+=1;sync()}else{playing=false;$('play').textContent='Play'}}requestAnimationFrame(tick)}
+$('play').onclick=()=>{const r=run();if(!r)return;if(frame>=r.poses[poseIndex(r,acq)].length-1)frame=0;playing=!playing;playStart=performance.now();playFrame0=frame;$('play').textContent=playing?'Pause':'Play'};
+// frames are sampled uniformly over the horizon, so wall-clock time maps linearly to frame index
+function tick(now){const r=run();if(playing&&r){const last=r.poses[poseIndex(r,acq)].length-1,perSecond=last/DATA.tasks[task].horizon;const f=Math.min(last,playFrame0+Math.floor((now-playStart)/1000*perSecond));if(f!==frame){frame=f;sync()}if(frame>=last){playing=false;$('play').textContent='Play'}}requestAnimationFrame(tick)}
 sync();tick();
 </script></body></html>

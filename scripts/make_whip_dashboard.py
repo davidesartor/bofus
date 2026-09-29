@@ -15,7 +15,10 @@ from bofus.rkhs import RBFMixture
 from targets.whip import Whip, joint_positions
 
 TEMPLATE = Path(__file__).parent / "templates" / "whip_dashboard.html"
-CACHE_VERSION = 3
+CACHE_VERSION = 5
+ANIMATION_FPS = 24
+# rollouts animated per run: running-best improvements can be dense, and each is ~100 KB of JSON
+MAX_POSE_STEPS = 16
 MODELS = (1, 2, 4)
 TASKS = {"whip2d": "2D", **{f"whip3d_{i}": f"3D target {i}" for i in range(1, 7)}}
 # DIRECT-L iterations to converge, from the paper text (exact only for targets 3 and 5)
@@ -36,10 +39,11 @@ def make_whip(task: str) -> Whip:
 @eqx.filter_jit
 def simulate_reference(
     whip: Whip, q0: Float[Array, "t k"], dq0: Float[Array, "t k"]
-) -> tuple[Scalar, Float[Array, "48 n/2+1 3"]]:
-    """Roll out a reference trajectory: its objective and subsampled joint positions."""
+) -> tuple[Scalar, Float[Array, "f n/2+1 3"]]:
+    """Roll out a reference trajectory: its objective and joint positions at ANIMATION_FPS."""
     _, qs, _ = whip.rollout(q0, dq0)
-    frame_indices = jnp.linspace(0, whip.n_steps, 48).astype(int)
+    n_frames = round(whip.horizon * ANIMATION_FPS) + 1
+    frame_indices = jnp.linspace(0, whip.n_steps, n_frames).astype(int)
     frames = jax.vmap(joint_positions, in_axes=(0, None))(qs[frame_indices], whip.chain)
     return whip.min_distance(qs), frames
 
@@ -49,7 +53,7 @@ def animate_solution(whip: Whip, data: np.lib.npyio.NpzFile, index: int) -> np.n
     f = RBFMixture(*(jnp.asarray(data[k][index]) for k in ("l", "x", "a")))
     _, q0, dq0 = whip.reference(f)
     _, frames = simulate_reference(whip, q0, dq0)
-    return np.asarray(frames).round(4)
+    return np.asarray(frames, dtype=float).round(3)
 
 
 def paper_solution(whip: Whip, task: str, direct_path: Path) -> dict:
@@ -66,7 +70,7 @@ def paper_solution(whip: Whip, task: str, direct_path: Path) -> dict:
         "y": float(cost),
         "iterations": iterations,
         "iterationsLabel": label,
-        "poses": np.asarray(frames).round(4).tolist(),
+        "poses": np.asarray(frames, dtype=float).round(3).tolist(),
     }
     if direct_path.exists():
         y = np.load(direct_path)["y"].astype(float)
@@ -77,15 +81,17 @@ def paper_solution(whip: Whip, task: str, direct_path: Path) -> dict:
 def running_best_poses(
     whip: Whip, path: Path, cache_path: Path, progress: tqdm
 ) -> tuple[list[int], list]:
-    """Animate every running-best candidate, reusing the cache when the run is unchanged."""
+    """Animate up to MAX_POSE_STEPS running-best candidates, reusing the cache when the run is unchanged."""
     data = np.load(path)
-    pose_steps = np.flatnonzero(data["y"] == np.minimum.accumulate(data["y"])).tolist()
+    improvements = np.flatnonzero(data["y"] == np.minimum.accumulate(data["y"]))
+    keep = np.unique(np.linspace(0, len(improvements) - 1, MAX_POSE_STEPS).round().astype(int))
+    pose_steps = improvements[keep].tolist()
     signature = np.array([CACHE_VERSION, path.stat().st_mtime_ns, path.stat().st_size])
     if cache_path.exists():
         cached = np.load(cache_path)
         if np.array_equal(cached["source_signature"], signature):
             progress.update(len(pose_steps))
-            return cached["pose_steps"].astype(int).tolist(), cached["poses"].tolist()
+            return cached["pose_steps"].astype(int).tolist(), cached["poses"].astype(float).round(3).tolist()
 
     poses = []
     for step in pose_steps:

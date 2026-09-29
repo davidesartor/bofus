@@ -8,8 +8,7 @@
 *tar.gz
 
 # Ignore run outputs
-results/
-results_converted/
+results
 plots/
 sweep.log
 sweep_*.log
