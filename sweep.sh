@@ -23,6 +23,7 @@ declare -A TARGET_RESOURCES=(
     [sinc2d]="6G 0:30:00"
     [sinc3d]="6G 0:30:00"
     [sinc4d]="6G 0:30:00"
+    [sinc5d]="16G 0:45:00"
     [gramacylee]="8G 0:30:00"
     [ackley]="8G 0:30:00"
     [hartmann]="8G 0:30:00"
@@ -41,6 +42,7 @@ targets=(
     sinc2d
     sinc3d
     sinc4d
+    sinc5d
     brachistochrone
     pinwheel
     gramacylee
@@ -95,13 +97,21 @@ mkdir -p "$MANIFESTS" logs/
 
 # vellanky's parametrization is 1d only, and the permutation-simplex ablation is defined for the
 # ridges and the physical targets, so neither variant runs on every target
-MULTIDIM_FNS="ackley|hartmann|rosenbrock|michalewicz|pendulum|sinc2d|sinc3d|sinc4d"
+MULTIDIM_FNS="ackley|hartmann|rosenbrock|michalewicz|pendulum|sinc2d|sinc3d|sinc4d|sinc5d"
+# sinc5d was added for the camera-ready and runs only what its regret table row and the ablation
+# figures need: those methods, the lengthscale the sinc rows pick from 3d on, and the seeds the
+# other rows have
+MAIN_ONLY_FNS="sinc5d"
+MAIN_VARIANTS="random|ours --disable_natural_gradient|vien|shilton|kundu|ours|vien --disable_natural_gradient|ours --lstsq_rcond=1e-10|ours --lstsq_rcond=1e-08|ours --lstsq_rcond=1e-06|ours --sample_candidates_from_gp|ours --fixed_k=1|ours --fixed_k=5|ours --fixed_k=10"
+MAIN_ONLY_LENGTHSCALE=0.4
+MAIN_ONLY_SEEDS=($(seq 0 31))
 CONSTRAIN_ORDER_FNS="gramacylee|ackley|hartmann|rosenbrock|michalewicz|brachistochrone|hopper|pendulum"
 
 variant_runs_on() {
     local variant=$1 target_fn=$2
     [[ "${variant%% *}" == "vellanky" && "$target_fn" =~ ^($MULTIDIM_FNS)$ ]] && return 1
     [[ "$variant" == *"--constrain_order"* && ! "$target_fn" =~ ^($CONSTRAIN_ORDER_FNS)$ ]] && return 1
+    [[ "$target_fn" =~ ^($MAIN_ONLY_FNS)$ && ! "$variant" =~ ^($MAIN_VARIANTS)$ ]] && return 1
     return 0
 }
 
@@ -126,11 +136,16 @@ for target_fn in "${targets[@]}"; do
     runs=()
     for profile in "${profiles[@]}"; do
     for lengthscale in "${lengthscales[@]}"; do
+    target_seeds=("${seeds[@]}")
+    if [[ "$target_fn" =~ ^($MAIN_ONLY_FNS)$ ]]; then
+        [[ "$lengthscale" == "$MAIN_ONLY_LENGTHSCALE" ]] || continue
+        target_seeds=("${MAIN_ONLY_SEEDS[@]}")
+    fi
     for variant in "${variants[@]}"; do
         variant_runs_on "$variant" "$target_fn" || continue
         # one subshell per variant, not per run: the seed loop below runs a few hundred thousand times
         variant_dir=${VARIANT_DIR[$variant]:=$(variant_to_dir "$variant")}
-        for seed in "${seeds[@]}"; do
+        for seed in "${target_seeds[@]}"; do
             runs+=("$profile $lengthscale $variant_dir $seed $variant")
         done
     done

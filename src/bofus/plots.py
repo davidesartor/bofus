@@ -921,7 +921,7 @@ if __name__ == "__main__":
             "shilton": "Shilton",
             "vellanky": "Vellanki",
         },
-        drop_target_fns=("sinc1d", "sinc2d", "sinc3d", "sinc4d"),
+        drop_target_fns=("sinc1d", "sinc2d", "sinc3d", "sinc4d", "sinc5d"),
     )
 
     ###############################################################################
