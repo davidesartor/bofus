@@ -12,6 +12,7 @@ We propose a method for Functional Bayesian Optimization (FBO) that searches a s
 │   ├── run.py           # Main entry point: run a single experiment
 │   ├── summary.py       # Aggregate raw results into parquet tables
 │   ├── plots.py         # Generate all figures and tables from the parquet tables
+│   ├── tables.py        # Write the LaTeX tables of the paper
 │   ├── gp.py            # Gaussian process surrogate models
 │   ├── rkhs.py          # RKHS function representations
 │   ├── kernels.py       # Kernel functions (RBF, Matérn)
@@ -60,9 +61,10 @@ With the results archive extracted and the tables in place:
 
 ```bash
 uv run -m bofus.plots
+uv run -m bofus.tables
 ```
 
-This writes all figures to `plots/`, organized as:
+`bofus.tables` writes the LaTeX tables of the paper to `latex/neurips/tables/` (override with `TABLES_DIR`). `bofus.plots` writes all figures to `plots/`, organized as:
 
 | Directory | Contents |
 |---|---|
@@ -128,6 +130,7 @@ After the sweep completes, regenerate the tables and plots:
 ```bash
 uv run -m bofus.summary
 uv run -m bofus.plots
+uv run -m bofus.tables
 ```
 
 ## Benchmark Functions
