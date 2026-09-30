@@ -144,7 +144,7 @@ Bayesian Optimization on Function Spaces via \\ Sparse RKHS Manifolds
 \gls{bo} has become an established methodology for minimizing black-box functions of a vector input.
 Often, however, this parameter vector arises from the discretization of an inherently functional relationship. 
 Several recent articles have considered the \gls{fbo} setting, in which the variable to be optimized is not a member of a finite dimensional vector space, but rather an infinite dimensional function space.
-In this work, we propose $L^0$ Manifold Optimization (\wycoff), a simple approach to \gls{fbo} which searches a sub-manifold of a \gls{rkhs} consisting of functions with a sparse representation in the kernel functions.
+In this work, we propose $L^0$ Manifold Optimization (\wycoff), a simple approach to \gls{fbo} which searches the subset of a \gls{rkhs} consisting of functions with a sparse representation in the kernel functions, optimizing both the kernel locations and their coefficients.
 This results in simpler, more effective functional solutions than existing methods.
 %, and facilitates setting the many hyperparameters that \gls{fbo} requires.
 We discuss in detail the relationship between our method and existing ones, providing a unifying lens through which to view prior works.
@@ -163,9 +163,18 @@ where the domain $\U$ of $f$ is usually a compact subset of $\R^P$, most commonl
 A leading strategy for addressing these problems is \gls{bo} \citep{jones1998efficient,frazier2018tutorial,garnett2023bayesian}, which involves reasoning probabilistically about the location of the global minimum given a set of observed input-output relationships $(\vu_1,f(\vu_1)),\ldots,(\vu_N,f(\vu_N))$.
 Given a small initial sample and a total budget $B$, the goal is to choose points one-by-one so as to find the point $\vu$ with the lowest possible $f(\vu)$.
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.99\textwidth]{figures/l0_manifold.pdf}
+  \caption{A schematic view inside $\mathcal{H}$, illustrating our approximation strategy.
+  The sparse manifolds form a stratified set of increasing dimension, depicted as a curve, a surface patch, and a ball.
+  For a target $u \in \mathcal{H}$ that does not admit a finite sparse representation, the best $m$-sparse approximation $u_m \in \bigcup_{i \le m} \mathcal{M}^i$ moves closer to $u$ as $m$ grows.
+  }
+  \label{fig:natgrad}
+\end{figure}
 The finite dimensional setting is appropriate when $f$ depends on a finite set of clearly defined parameters.
 Frequently, however, the parameters are actually a discretization of an intrinsically functional quantity.
-For example, the classical \textit{wing weight function} \cite{forrester2008} is typically viewed as an 11 dimensional parametric function. 
+For example, the classical \textit{wing weight function} \cite[Ch.~1]{forrester2008engineering} is typically viewed as an 11 dimensional parametric function. 
 But these parameters encode the shape of a wing, and the space of possible designs actually consists of the in-principle infinite dimensional space of wing shapes.
 %For example, in the context of inertial confinement fusion energy, \cite{crilly2026automated} deployed \gls{bo} to optimize the shape of a fuel pellet, represented by two parameters, and the shape of the laser pulse, represented by five.
 %But the spaces of possible pellet shapes and laser profiles actually consist of in-principle infinite dimensional function spaces.
@@ -194,7 +203,7 @@ In this article, we will propose to solve the acquisition subproblem of the form
     \max_{w\in\mathcal{W}\subseteq \R^l}
     \acq \left(\phi(w) \right) \,,
 \end{equation}
-where $\acq$ is the acquisition function and $\phi: \R^l \to \Hs$ is a smooth parameterization of an $l$-dimensional sparse sub-manifold of $\Hs$. 
+where $\acq$ is the acquisition function and $\phi: \R^l \to \Hs$ is a smooth parameterization of a stratified set in $\Hs$, obtained as the union of manifolds $\mathcal{M}$ of dimension at most $l$. 
 For a given $l$, this allows a much richer set of candidate functions than existing fixed-basis method: our approach allows the support points themselves to vary.
 This also allows for straightforward enforcement of additional desirable properties such as boundedness and sparsity, while maintaining compatibility with the computational tools used for finite-dimensional \gls{bo} such as multi-start Quasi-Newton search \cite[Chapter 7]{gramacy2020surrogates}.
 %The proposed approach is both simpler and more empirically effective than prior methods.
@@ -226,7 +235,7 @@ The capability to produce a full posterior over any new candidate point $x^*$ gi
 In \gls{bo}, this proceeds by defining an \emph{acquisition function} $\acq$ which measures the desirability of $x^*$ in light of the goal of minimization and the information revealed by the data so far observed.
 A popular acquisition function, and the one we use in this work is \gls{ei}:
 \begin{equation}
-    \acq_{\textrm{EI}}(\vu \mid \mathcal{GP}) = \sigma_{\mathcal{GP}}(\vu) \!\big( \gamma(\vu) \Phi(\gamma(\vu)) + \varphi(\gamma(\vu)) \big), \quad \gamma(\vu) = \frac{\mu_{\mathcal{GP}}(\vu) - y^*}{\sigma_{\mathcal{GP}}(\vu)},
+    \acq_{\textrm{EI}}(\vu \mid \mathcal{GP}) = \sigma_{\mathcal{GP}}(\vu) \!\big( \gamma(\vu) \Phi(\gamma(\vu)) + \varphi(\gamma(\vu)) \big), \quad \gamma(\vu) = \frac{y^* - \mu_{\mathcal{GP}}(\vu)}{\sigma_{\mathcal{GP}}(\vu)},
 \end{equation}
 where $y^*$ is the current best observation and $\Phi$ and $\varphi$ are the standard normal CDF and PDF.
 The next point to acquire is the one which maximizes the acquisition function.
@@ -257,7 +266,7 @@ Following \cite{vien2018bayesian}, we use an \gls{rkhs} as our function space.
 Since we are in the context of a designed experiment rather than observational data, we can afford to choose functions which lead to an easily computed $\norm{\cdot}_\Hs$.
 In particular, if two functions $\vu,\vu' \in \Hs$ are expressible with a finite linear combination of elements of $\F$ we have that 
 \begin{equation}
-\norm{\vu - \vu'}_\Hs^2 = \sum_{i,j} \alpha_i\alpha'_j \kernelH(x_i,x_j) - 2\sum_{i,j} \alpha_i\alpha_j' \kernelH(x_i,x_j') + \sum_{i,j} \alpha_i'\alpha_j' \kernelH(x_i',x_j'),
+\norm{\vu - \vu'}_\Hs^2 = \sum_{i,j} \alpha_i\alpha_j \kernelH(x_i,x_j) - 2\sum_{i,j} \alpha_i\alpha_j' \kernelH(x_i,x_j') + \sum_{i,j} \alpha_i'\alpha_j' \kernelH(x_i',x_j'),
 \end{equation}
 which can be computed efficiently if neither function consists of overly many basis points.
 
@@ -266,11 +275,14 @@ It will be important to avoid confusion between $\kernelGP: \Hs \times\Hs \to \R
 
 In this work, it will be useful to define an extension of the $\ell^0$ ``norm"
 \footnote{As it clearly fails to obey positive homogeneity, this is not technically a norm. The same will be true of our extension.}
-for vectors, which counts its argument's nonzero coefficients, to functions in an RKHS generated by $\F$.
-If some function $u$ can be represented by a linear combination of $m$ many elements of $\F$ and no fewer, we say that $\Vert u \Vert_0 = m$.
-If not, we say that $\Vert u \Vert_0 = \infty$.
+for vectors, which counts its argument's nonzero coefficients, to functions in an RKHS generated by $\F$:
+\begin{equation}
+    \Vert \vu \Vert_0 = \inf\Big\{ m \in \N : \exists\, \alpha_1,\ldots,\alpha_m \in \R,\ x_1,\ldots,x_m \in \D \text{ such that } \vu = \textstyle\sum_{i=1}^m \alpha_i \kernelH(\cdot, x_i) \Big\},
+\end{equation}
+with $\inf\emptyset = \infty$.
 We refer to this as the $L^0$ norm.
-Notice that while the constraint set $\Vert u \Vert_0\leq m$ in $\mathbb{R}^d$ is not connected, in $\Hs$ it is; this facilitates optimization.
+The functions of finite $L^0$ norm form the pre-\gls{rkhs} $\Hs_0 = \textrm{span}(\F)$, which is dense in $\Hs$ by construction.
+Notice that while the vector constraint set $\{w \in \R^P : \Vert w \Vert_0\leq m\}$ is a union of coordinate subspaces that meet only at low-sparsity points, in $\Hs$ the support locations $x_i$ can move continuously, so that any two functions with $\Vert \vu \Vert_0 \leq m$ are connected by a path within the set; this facilitates optimization.
 
 \section{Related Work in \gls{fbo}}
 \label{sec:related_work}
@@ -305,21 +317,21 @@ However, the Bernstein parameterization is most natural in one dimension, and it
 %Given a point $\vu$ in $\Hs$ with a finite representation in $\F$, they show how to evaluate the Fr\'echet derivative, and demonstrate that it always lies in the span of those same points, such that it is computable.  As we will discuss further in \cref{sec:methodology}, the gradient descent procedure of \cite{vien2018bayesian} expands the support set at each step, leading to a representation that grows rapidly in size.
 %For this reason, ffter optimizing the acquisition function, \gls{kmp} \citep{vincent2002kernel} is used to select a reduced subset of $\Ft$ to define the function $\vu$ to next acquire.
 
-\cite{vien2018bayesian} showed that,  starting with some set of initial functions given by finite linear combinations of elements of $\F$, gradient descent on EI and UCB leads only to evolving the coefficients for those same support functions. 
+\cite{vien2018bayesian} showed that, when EI or UCB is maximized by gradient descent in $\Hs$ starting from a candidate $\vu_0$ with finite $L^0$ norm, every iterate remains in the span of the support functions of $\vu_0$ and of the $N$ previously observed functions $\vu_1,\ldots,\vu_N$ (\cref{eq:vien_support}), so that only the coefficients of those support functions evolve.
 This is a positive result in a computational sense: it could have been the case that a single step of gradient descent yields a function which does not have a finite $L^0$ norm, and thus cannot be represented on a computer.
 Luckily, however, we need only update coefficients.
 
-However, this is a double-edged sword: if we do not have a sufficiently diverse representation of elements of $\F$ in our initial design, we will never acquire them through sequential acquisition. 
-This means that all support functions used throughout optimization need to be present in the initial design, and thus that these design points must have a high $L^0$ norm, denoted $v$, if we are to have sufficient expressibility.
-As the number of design points $n$ grows, the complexity of computing the \gls{gp} kernel matrix grows with $v^2n^2$.
+However, this is a double-edged sword: the support locations are never optimized, and are instead fixed by the random initialization $\vu_0$ of each acquisition search and by the past observations.
+Expressivity must therefore come from the number of support functions: the random initializations must have a high $L^0$ norm, denoted $v$, and every candidate additionally inherits the supports of all past observations.
+As the number of observations $N$ grows, the complexity of computing the \gls{gp} kernel matrix grows with $v^2N^2$.
 \cite{vien2018bayesian} find that, to manage computation, it is therefore necessary to conduct a post-hoc sparsification step after optimizing the acquisition function.
 This involved deploying \gls{kmp} \citep{vincent2002kernel} to reduce to only $m\ll v$ many support functions.
 Then, kernel computation is only of complexity 
-$v^2n_{\textrm{init}}^2 + v m n_{\textrm{init}}n + m^2n^2 = O(m^2n^2)$.
+$v^2N_{\textrm{init}}^2 + v m N_{\textrm{init}}N + m^2N^2 = O(m^2N^2)$, where $N_{\textrm{init}}$ is the size of the initial design.
 
 There are two major limitations to this approach.
 First, even if the initial points have a high $L^0$ norm, there is no guarantee that they are suitable for approximately optimizing $f$, especially if $\D$ is of moderate dimension.
-Though motivated as performing optimization directly in $\Hs$, \cite{vien2018bayesian}'s procedure is ultimately restricted to a finite dimensional linear subspace of $\Hs$ given by the span of the initial support functions. 
+Though motivated as performing optimization directly in $\Hs$, each acquisition of \cite{vien2018bayesian} is ultimately restricted to a finite dimensional linear subspace of $\Hs$, spanned by support functions that are drawn at random or inherited from past observations, rather than chosen to improve the acquisition. 
 %, there is no guarantee that the post-hoc sparsification does not damage the viability of the next candidate function vis-a-vis the acquisition function; EI is known to change sharply with respect to small changes in the input.
 Second, the post-hoc sparsification step creates a critical issue: the sparse approximation of the optimum is not necessarily the optimum among sparse candidates.
 This situation is similar to solving an integer program by first solving a continuous relaxation and then rounding. 
@@ -328,15 +340,6 @@ In the next section, we will propose a method which addresses both of these limi
 \section{Methodology}
 \label{sec:methodology}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.99\textwidth]{l0_manifold.pdf}
-  \caption{A schematic view inside $\mathcal{H}$, illustrating our approximation strategy.
-  The sub-manifolds form a strictly increasing nested family $\mathcal{M}^1 \subset \mathcal{M}^2 \subset \mathcal{M}^3 \subset \mathcal{H}$ of increasing dimension, depicted respectively as a curve, a surface patch, and a ball.
-  For a target $u \in \mathcal{H}$ that does not admit a finite sparse representation, the best $m$-sparse approximation $u_m \in \mathcal{M}^m$ moves closer to $u$ as $m$ grows.
-  }
-  \label{fig:natgrad}
-\end{figure}
 
 %The approach of \citep{vien2018bayesian} is clever and theoretically grounded.
 %The demonstration by \citep{vien2018bayesian} that gradient descent can be conducted directly in the function space on a computer opened the door to \gls{fbo}.
@@ -348,10 +351,13 @@ This means jointly choosing $\alpha_1,\ldots,\alpha_m\in\mathcal{A}$ for a suita
 For a given $m$, we therefore search the set
 $\mathcal{M}^m = \{u \in \Hs : \Vert u \Vert_0 \leq m\}$.
 %This means optimizing over the finite-dimensional manifold ${\mathcal{M}^M = \{\vu : \exists\, \alpha_1, \ldots, \alpha_M, x_1, \ldots, x_m \,\textrm{s.t.}\, \vu = \sum_{m=1}^M \alpha_m \kernelH(\cdot, x_m)\}}$.
-It is simple to show that for $\vu : \R^d \to \R$, this is in fact a $l:=(d+1)m$-dimensional manifold and not a linear subspace. For instance, $\kernelH(\cdot, x_1)$ and $\kernelH(\cdot, x_2)$ both belong to $\mathcal{M}^1$, but $\kernelH(\cdot, x_1) + \kernelH(\cdot, x_2)$ does not in general. 
-It is also clear that these manifolds are nested such that $\mathcal{M}^1\subset\mathcal{M}^2\subset\ldots$ and that all belong to $\Hs$.
+This set is not a linear subspace: for instance, $\kernelH(\cdot, x_1)$ and $\kernelH(\cdot, x_2)$ both belong to $\mathcal{M}^1$, but $\kernelH(\cdot, x_1) + \kernelH(\cdot, x_2)$ does not in general.
+Nor is it a single manifold, but rather a stratified set $\mathcal{M}^m = \bigcup_{j\leq m} S^j$, whose strata $S^j = \{\vu\in\Hs : \Vert \vu \Vert_0 = j\}$ collect the functions of exact sparsity $j$.
+For $\D\subseteq\R^d$ and the \gls{rbf} kernel, the canonical parameterization $\phi(\alpha, x) = \sum_{i=1}^m \alpha_i\kernelH(\cdot,x_i)$ maps the open set $W^m = \{(\alpha,x) : x_i \text{ pairwise distinct},\ \alpha_i\neq 0\}\subset\R^{(d+1)m}$ onto the top stratum $S^m$ as an $m!$-sheeted covering, the sheets differing only by a permutation of the support points.
+The top stratum is therefore an immersed smooth manifold of dimension $l:=(d+1)m$, while the lower strata $S^j$, $j<m$, are reached at the boundary of $W^m$, where a coefficient vanishes or two support points coincide.
+The sets are nested such that $\mathcal{M}^1\subset\mathcal{M}^2\subset\ldots$, and their union is the pre-\gls{rkhs} $\Hs_0$.
 For general $\D$, there are functions in $\Hs$ that do not belong to any $\mathcal{M}^m$.
-However, by definition of the closure of the span, any function in $\Hs$ can be approximated arbitrarily well by a member of some $\mathcal{M}^m$.
+However, since $\Hs_0$ is dense in $\Hs$, any function in $\Hs$ can be approximated arbitrarily well by a member of some $\mathcal{M}^m$, and the optimal value of a continuous objective over $\mathcal{M}^m$ converges to its infimum over $\Hs$ as $m$ grows.
 For moderate $m$, we therefore expect this method to perform well when the functional $f$ can be approximately minimized using functions with small $L^0$ norm.
 From the function space perspective, at each iteration we solve:
 \begin{align}
@@ -365,8 +371,11 @@ which practically speaking is implemented as:
     \acq\left(\sum_{i=1}^m
     \alpha_i k(\cdot,x_i)
     \right)  \,.
+    \label{eq:acq_problem}
 \end{align}
 This involves solving a finite dimensional search to which we can apply the standard tools used to solve the \gls{bo} acquisition subproblem.
+Over all of $\Hs$ the maximum need not exist, since sparse sets are not compact and the acquisition need not be continuous in their topology.
+In \cref{eq:acq_problem}, however, the search is over a compact parameter set (a compact $\D$ and a compact $\mathcal{A}$, e.g.\ the box constraints of the bounded parameterization below) through the continuous map $\phi$, and the \gls{gp} posterior mean and standard deviation, and hence \gls{ei}, are continuous in the \gls{rkhs} distance for the kernels we use, so that a maximizer exists by the extreme value theorem.
 
 %With this strategy in hand, choosing a new function $\vu$ at which to evaluate $f$ thus involves jointly searching the acquisition function over support locations $x_1, \ldots, x_m$ and coefficients $\alpha_1, \ldots, \alpha_m$. 
 %We can view this as adding an $L^0$ constraint $\Vert \vu \Vert_0 \leq M$ to the search problem, where
@@ -383,9 +392,9 @@ The classical remedy is the natural gradient \citep{amari1998natural}. Recall th
 \end{equation}
 which yields the update $w_{t+1} = w_t - \lambda \nabla f(w_t)$. Replacing the squared Euclidean distance with a non-Euclidean dissimilarity $D(w, w_t)^2$ produces the natural gradient update
 \begin{equation}
-    w_{t+1} = w_t - \lambda G^{-1} \nabla f(w_t),
+    w_{t+1} = w_t - \lambda G^{+} \nabla f(w_t),
 \end{equation}
-where $G$ is the metric tensor associated with $D$.
+where $G$ is the metric tensor associated with $D$ and $G^{+}$ its Moore--Penrose pseudoinverse.\footnote{On the top stratum $W^m$ the metric tensor of the canonical parameterization is positive definite and $G^{+}=G^{-1}$. It degenerates at the boundary, where the parameterization stops being an immersion: if $\alpha_i = 0$, for example, any displacement of $x_i$ leaves $\phi$ unchanged. The pseudoinverse discards these directions (see \cref{app:natural_gradient} for a truncated variant).}
 
 For a smooth parameterization $\phi: \R^l \to \Hs$, the natural choice of $D$ is the $\Hs$-distance pulled back through $\phi$: $D(w, w') = \norm{\phi(w) - \phi(w')}_\Hs$. The resulting metric is the \emph{pullback metric} with metric tensor
 \begin{equation}
@@ -431,11 +440,13 @@ The proposed framework includes the gradient descent procedure of \cite{vien2018
 \begin{equation}
     D_\vu \kernelGP(\vu, \vu') = -\frac{\kernelGP(\vu, \vu')}{\ell}\inner{\cdot}{\vu - \vu'}_\Hs,
 \end{equation}
-whose Riesz representer in $\Hs$ is $-\frac{\kernelGP(\vu, \vu')}{\ell}(\vu - \vu')$. For $\vu = \sum_{i=1}^{m_\vu} \alpha_i \kernelH(\cdot, x_i)$ and $\vu' = \sum_{i=1}^{m_{\vu'}} \alpha'_i \kernelH(\cdot, x'_i)$, this representer lies in $\Hs$ with support points given by the union of those of $\vu$ and $\vu'$. Consequently, starting from $\vu_0$, after $t$ steps of gradient descent the candidate $\vu_t$ accumulates the support points of all previously observed candidates:
+whose Riesz representer in $\Hs$ is $-\frac{\kernelGP(\vu, \vu')}{\ell}(\vu - \vu')$. For $\vu = \sum_{i=1}^{m_\vu} \alpha_i \kernelH(\cdot, x_i)$ and $\vu' = \sum_{i=1}^{m_{\vu'}} \alpha'_i \kernelH(\cdot, x'_i)$, this representer lies in $\Hs$ with support points given by the union of those of $\vu$ and $\vu'$. Since the gradient of the acquisition involves $\kernelGP(\vu, \vu_n)$ for every observed function $\vu_n$, $n=1,\ldots,N$, after $t$ steps of gradient descent from $\vu_0$ the candidate $\vu_t$ accumulates the support points of all observed functions:
 \begin{equation}
-    \vu_t = \sum_{i=1}^{m_{\vu_0}} \beta_i \kernelH(\cdot, x_i) + \sum_{\vu' \in \mathcal{D}}\sum_{i=1}^{m_{\vu'}} \beta_{\vu',i} \kernelH(\cdot, x'_i).
+    \vu_t = \sum_{i=1}^{m_{\vu_0}} \beta_i \kernelH(\cdot, x_i) + \sum_{n=1}^{N}\sum_{i=1}^{m_{\vu_n}} \beta_{n,i} \kernelH(\cdot, x_{n,i}),
+    \label{eq:vien_support}
 \end{equation}
-To interpret this as natural gradient descent, fix the support set $\{x_i\}_{i=1}^m$ to the union of all observed candidates and consider the parameterization:
+where $x_{n,i}$ are the support points of $\vu_n$.
+To interpret this as natural gradient descent, fix the support set $\{x_i\}_{i=1}^m$ to the union of the supports of $\vu_0$ and of all observed functions, and consider the parameterization:
 \begin{equation}
     \phi(w) = \sum_{i=1}^m w_i \kernelH(\cdot, x_i), \qquad w \in \R^m.
 \end{equation}
@@ -447,7 +458,7 @@ i.e.\ $G$ is the kernel matrix of $\kernelH$ evaluated on the fixed support set.
 \begin{equation}
     \nabla_w \kernelGP(\phi(w), \phi(w')) = -\frac{\kernelGP(\phi(w), \phi(w'))}{\ell} \, G(w - w').
 \end{equation}
-The update direction of \cite{vien2018bayesian}, expressed as a coefficient vector in this parameterization, is instead $-\frac{\kernelGP(\phi(w), \phi(w'))}{\ell}(w - w')$, which is exactly the Euclidean gradient premultiplied by $G^{-1}$. The updates of \cite{vien2018bayesian} are therefore equivalent to natural gradient descent in this parameterization.
+The update direction of \cite{vien2018bayesian}, expressed as a coefficient vector in this parameterization, is instead $-\frac{\kernelGP(\phi(w), \phi(w'))}{\ell}(w - w')$, which is exactly the Euclidean gradient premultiplied by $G^{-1}$ (or $G^{+}$ if support points repeat). The updates of \cite{vien2018bayesian} are therefore equivalent to natural gradient descent in this parameterization.
 
 \section{Experimental Results}
 \label{sec:experiments}
