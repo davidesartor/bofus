@@ -1,0 +1,20 @@
+\begin{table}[h]
+\centering
+\caption{Mean rank over the ten main benchmarks at each \gls{rkhs} lengthscale $\ell$, each method using its own best \gls{gp} profile at that $\ell$. A method ties with any better one whose median lies within its own 95\% CI. Lower is better; best per row in bold.}
+\label{tab:lengthscale_ranks}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.0}
+\tiny
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l cc cc cc cc cc cc }
+\toprule
+$\ell$ & \multicolumn{2}{c}{Random} & \multicolumn{2}{c}{\kundu} & \multicolumn{2}{c}{\vien} & \multicolumn{2}{c}{\shilton} & \multicolumn{2}{c}{\vellanky} & \multicolumn{2}{c}{\wycoff} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11} \cmidrule(lr){12-13}
+ & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} \\
+\midrule
+$0.05$ & $4.40$ & $4.70$ & $3.70$ & $3.20$ & $2.80$ & $2.30$ & $2.20$ & $2.90$ & $3.20$ & $3.20$ & $\mathbf{2.10}$ & $\mathbf{1.70}$ \\
+$0.1$ & $4.20$ & $4.40$ & $3.40$ & $3.30$ & $3.10$ & $2.90$ & $2.60$ & $2.60$ & $3.20$ & $3.20$ & $\mathbf{1.70}$ & $\mathbf{1.60}$ \\
+$0.2$ & $4.30$ & $4.40$ & $3.80$ & $3.60$ & $3.10$ & $3.40$ & $2.20$ & $2.50$ & $3.40$ & $3.40$ & $\mathbf{1.10}$ & $\mathbf{1.10}$ \\
+$0.4$ & $3.50$ & $3.80$ & $4.10$ & $4.20$ & $3.10$ & $3.50$ & $1.90$ & $2.40$ & $4.60$ & $4.00$ & $\mathbf{1.10}$ & $\mathbf{1.10}$ \\
+\bottomrule
+\end{tabular*}
+\end{table}

@@ -573,114 +573,46 @@ We see several promising directions for future work. First, the complexity $m$ i
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \appendix
+\let\appendixsection\section
+\renewcommand{\section}{\clearpage\appendixsection}
 
-\section{Gaussian Process Kernel Profile}
-\label{app:kernel_profile}
+\FloatBarrier
+\section{Convergence of the Integral Functionals}
+\label{app:convergence}
 
-The profile of the surrogate \gls{gp} kernel determines the smoothness assumptions placed on the target functional $f$.
-In standard finite-dimensional \gls{bo}, the target is commonly assumed to be at least once differentiable, and the \gls{rbf} or Mat\'ern-5/2 kernel is a natural default.
-In the functional domain, however, $f$ maps functions to scalars and need not inherit the regularity of the underlying function space; for instance, evaluation-based objectives such as travel time or cumulative reward can be discontinuous as a function of the \gls{rkhs} distance between candidates.
-This motivates considering rougher kernels, including Mat\'ern-3/2 and Mat\'ern-1/2, as surrogate priors.
-
-\Cref{fig:kernel_profile_ablation} shows the performance of \wycoff{} under each of the four kernel profiles across all benchmarks.
-On several benchmarks, particularly among the real-world tasks, rougher kernels such as Mat\'ern-3/2 and Mat\'ern-1/2 yield measurably better performance than the smooth \gls{rbf} baseline, consistent with the idea that the target functional may not be smooth as a function of \gls{rkhs} distance even when the candidate functions themselves are smooth.
-That said, the differences across profiles are generally moderate rather than dramatic: no single profile dominates uniformly, and the ranking varies across benchmarks without a clear systematic pattern.
-
-Qualitatively similar conclusions hold for the other methods considered in this work, suggesting that the sensitivity to kernel profile is a property of the \gls{fbo} problem class rather than of any particular algorithm.
-Overall, the kernel profile is an important hyperparameter that practitioners should not ignore, but it is not a critical one: reasonable performance is obtainable across the full range of profiles considered, and the largest gains from careful tuning are concentrated in a subset of benchmarks.
-In the main experiments of \cref{sec:experiments}, each method is evaluated at the profile that achieves the lowest final regret for that method and benchmark combination, as reported in \cref{tab:hyperparams}, ensuring that no method is penalized by a suboptimal kernel choice.
+The ridge functionals of \cref{sec:experiments} are defined by the integrals $L_i[\vu] = \int w_i \vu$.
+For candidates in the \gls{rbf} \gls{rkhs}, each integral factorizes over the input dimensions and each factor is a Gaussian integral of a trigonometric function over $[0,1]$, which we evaluate in closed form through the complex error function.
+To check this closed form, and to show how accurately the functional can be approximated when it is not available, we compare it with the Monte Carlo estimate obtained by averaging $w_i \vu$ over $n$ uniform points in $[0,1]^d$.
+We draw $32$ random candidates with $10$ support points and lengthscale $0.2$, in the same way as the initial designs of the sweep, and evaluate the ratio between the Monte Carlo and closed form target values for $n = 2^0, \ldots, 2^{16}$.
+\Cref{fig:convergence} shows that the ratio converges to one on every benchmark: the median relative error is below $1.3\%$ at $n=2^{12}$ and below $0.3\%$ at $n=2^{16}$, decreasing at the expected $O(1/\sqrt{n})$ rate.
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=\textwidth]{figures/kernel_profile_ablation.pdf}
-    \caption{Effect of the \gls{gp} kernel profile on \wycoff{} across benchmark functions. Each line corresponds to a different smoothness assumption on the surrogate.}
-    \label{fig:kernel_profile_ablation}
+    \includegraphics[width=\textwidth]{figures/convergence.pdf}
+    \caption{Ratio between the Monte Carlo estimate of the ridge functionals on $n$ uniform points and their closed form value (median and 95\% \gls{ci} over $32$ random candidates).}
+    \label{fig:convergence}
 \end{figure}
 
-\section{\gls{rkhs} Kernel Scale and Continuity Priors}
-\label{app:ablations}
-
-Following the previous literature, we use an \gls{rkhs} with an \gls{rbf} kernel.
-The lengthscale parameter $\ell$ determines which functions admit a sparse approximation, and therefore changes the optimization landscape.
-Since the optimal lengthscale is task-specific rather than method-specific, we consider a log-uniform grid of values $\{0.4, 0.2, 0.1, 0.05\}$. The optimal lengthscale is taken to be the one for which the best target function value is achieved (across all runs and all methods).
-
-The surrogate \gls{gp} kernel also plays a role.
-The choice of kernel defines the prior on the smoothness of the surrogate model.
-We consider four profiles: \gls{rbf}, Mat\'ern-5/2, Mat\'ern-3/2, and Mat\'ern-1/2, corresponding respectively to $\mathcal{C}^\infty$, $\mathcal{C}^2$, $\mathcal{C}^1$, and $\mathcal{C}^0$ surrogate models.
-Unlike standard \gls{bo}, where the target function is often assumed to be at least differentiable, in the functional domain the target may be discontinuous, making rougher kernels potentially more appropriate.
-
-The optimal profile may vary not only across target functions but also across methods, so we tune this independently for each method, showing each approach at its best.
-The selected lengthscales and profiles for each setting are reported in \cref{tab:hyperparams}.
-
-\input{tables/best_lengthscales}
-
-\section{Effect of Natural Gradient}
-\label{app:natural_gradient}
-
-\Cref{fig:gradient_ablation_vien} compares the optimization trajectories obtained when running the procedure of \cite{vien2018bayesian} with and without the natural gradient preconditioner.
-As established in \cref{sec:methodology}, the original updates of \cite{vien2018bayesian} correspond to natural gradient descent in a finite-dimensional parameter space; here we ablate the role of the preconditioner directly.
-
-The L-BFGS-B optimizer already builds an empirical approximation to the inverse Hessian from gradient history, which in practice subsumes much of the correction that the pullback metric $G^{-1}$ would otherwise provide.
-
-For \vien{}, the difference between running with and without the natural gradient preconditioner is minimal across benchmarks: the trajectories are nearly indistinguishable, and no consistent advantage is observed in either direction.
-For \wycoff{}, where the parameterization jointly optimizes over support locations $x$ and coefficients $\alpha$, applying the natural gradient preconditioner on top of L-BFGS-B mildly \emph{hurts} performance relative to running L-BFGS-B directly.
-These results are consistent with quasi-newton methods being effectively able to learn the proper metric such that explicitly using the preconditioner is superfluous. 
-
-The natural gradient remains a theoretically illuminating lens through which to interpret existing methods, as discussed in \cref{sec:methodology}, but it does not translate to a practical advantage when a quasi-Newton optimizer is already in use.
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_vien.pdf}
-    \caption{Effect of natural gradient preconditioning for \vien{} across benchmark functions.}
-    \label{fig:gradient_ablation_vien}
-\end{figure}
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_ours.pdf}
-    \caption{Effect of natural gradient preconditioning for \wycoff{} across benchmark functions.}
-    \label{fig:gradient_ablation_wycoff}
-\end{figure}
-
-
-
-
-\section{Initial Candidate Distribution}
-\label{app:sampling_ablation}
-
-At each acquisition step, the L-BFGS-B optimizer is initialized from a set of $16$ candidate starting points,
-selected as the top $16$ out of $1024$ initial guesses evaluated on the acquisition function.
-The default strategy samples these $1024$ guesses via \gls{lhs} in the parameter space, as described in \cref{app:implementation}.
-Following \cite{shilton2020sequential}, an alternative is to draw the initial guesses from the surrogate \gls{gp} prior.
-
-\Cref{fig:sampling_ablation} compares these two sampling strategies for \wycoff{} across all benchmarks, overlayed with \shilton{} for reference.
-In the early acquisitions, the choice of initial candidate distribution produces a visible difference: prior-based sampling can lead to better or worse starting points depending on how suitable the \gls{gp} prior is for the given test function.
-However, this early discrepancy does not persist: as the number of acquisitions grows, the two strategies converge to nearly identical trajectories across almost all benchmarks.
-This is consistent with the expectation that, given a sufficiently good acquisition optimizer, the final solution found by L-BFGS-B is determined by the acquisition landscape rather than by the initialization, and the top-$16$ selection already filters out poor starting points effectively.
-
-These results suggest that the initial candidate distribution is not a critical design choice for \gls{fbo}: the acquisition optimization is robust enough that the long-run performance is insensitive to it.
-
-\begin{figure}[h]
-    \centering
-    \includegraphics[width=\textwidth]{figures/candidates_sampling_ablation.pdf}
-    \caption{Effect of the initial candidate distribution across benchmark functions.}
-    \label{fig:sampling_ablation}
-\end{figure}
-
+\FloatBarrier
 \section{Implementation Details}
 \label{app:implementation}
 
 The surrogate \gls{gp} is fit by maximum likelihood estimation of the lengthscale $\ell$ and nugget $g$, with the optimal trend $b$ and scale $\nu$ estimated analytically. For \wycoff, \vien, \kundu, and \shilton, the surrogate takes functional inputs $\vu$ with a stationary kernel defined on \gls{rkhs} distances $\|\vu - \vu'\|_\Hs$. For \vellanky, the surrogate works directly on the Bernstein polynomial coefficients, bypassing the \gls{rkhs} representation entirely.
+Following \textsc{hetGP}~\citep{binois2021hetgp}, the lengthscale bounds are set from the $5\%$ and $95\%$ quantiles of the pairwise distances between observations, so that the closest pairs can decorrelate down to a correlation of $0.01$ and the farthest pairs can remain correlated at $0.5$; the nugget is bounded in $[\varepsilon_{\textrm{machine}}, 100]$.
+The observations are zero-padded and masked to the next power of two, so that the likelihood and the predictive equations are compiled once per padded size rather than once per acquisition, and the LU factorization of the covariance matrix is computed once per fit and reused throughout the acquisition optimization.
 
 The acquisition function used follows the numerically stable log-\gls{ei} implementation of \cite{ament2024logei}.
 All methods use the same acquisition optimization strategy: given $1024$ initial candidates sampled via \gls{lhs}, the acquisition loss is evaluated at each candidate and the top $16$ are selected as starting points for L-BFGS-B optimization with \texttt{maxiter}$=100$, \texttt{ftol}$=\sqrt{\varepsilon_{\textrm{machine}}}$, and \texttt{gtol}$=0$. The best result across restarts is returned.
 
 Since the surrogate \gls{gp} operates on \gls{rkhs} distances, it can be fit on functional inputs with varying numbers of support points. Therefore the complexity of candidate points can vary across acquisition steps.
-Finding the optimal complexity schedule is beyond the scope of this work. For our evaluation we adopt a fixed schedule, shared across all methods. The parameter $k$ is taken to represent the size of the acquisition optimization problem: $k$ is the subspace dimension for \kundu{} and \shilton, the number of support points for \vien{} and \wycoff, and the polynomial degree for \vellanky.
+Finding the optimal complexity schedule is beyond the scope of this work (see \cref{app:fixed_k} for a comparison with fixed complexities). For our evaluation we adopt a fixed schedule, shared across all methods. The parameter $k$ is taken to represent the size of the acquisition optimization problem: $k$ is the subspace dimension for \kundu{} and \shilton, the number of support points for \vien{} and \wycoff, and the polynomial degree for \vellanky.
 We evaluate all methods on a fixed budget of $110$ function evaluations, beginning with 10 initial candidates sampled via \gls{lhs}, followed by 10 sequential acquisitions at each complexity level $k \in \{1, \ldots, 10\}$.
 The \random{} baseline follows the same schedule but skips surrogate modeling, using \gls{lhs} for all acquisitions.
 
-The experimental evaluation involves 40k+ indivudual runs and has been carried out on a slurm environment and we provide a bash script to reproduce the entire experimental sweep, including preset time and memory requirements. The evaluation took 2 days over 500 parallel jobs. Each individual run can be easily reproduced on consumer laptops, with running times ranging from a couple of minutes for the simpler ones, to a few hours for NN training and control simulations.
+The \gls{rkhs} lengthscale is selected per benchmark from $\{0.4, 0.2, 0.1, 0.05\}$ and the \gls{gp} kernel profile per method and benchmark, as detailed in \cref{app:kernel_profile,app:ablations}.
+Each configuration (benchmark, method, kernel profile and lengthscale) is repeated with 16 to 32 independent seeds, for a total of about $105$k individual runs.
+The sweep was carried out on a Slurm cluster, and we provide a script to reproduce it, including preset time and memory requirements.
+Each individual run can be reproduced on a consumer laptop, with running times ranging from a few minutes for the synthetic benchmarks to a few hours for neural network training and control simulations (\cref{app:timing}).
 
 All benchmarks operate in the same function space, optimizing over candidate functions $\vu:[0,1]^d\to[-1,1]$.
 To avoid discrepancies arising from differing input-output domains, additional care is needed to homogenize representation across methods.
@@ -697,13 +629,13 @@ After optimization, \gls{kmp} \citep{vincent2002kernel} is applied to sparsify t
 The basis functions for the random subspace are sampled with $k_{\max}$ support points throughout.
 At each acquisition step a fresh random subspace of dimension $k$ is constructed by sampling $k$ basis functions via the distribution induced by \gls{lhs} and the bounded parameterization.
 The candidate is a linear combination of these basis functions with coefficients $c \in [-1,1]$, obtained by concatenating the support points and coefficients of all basis functions.
-The corresponding $y$ values are computed and soft-squished to enforce the $[-1,1]$ range. 
+The corresponding $y$ values are computed and soft-squished to enforce the $[-1,1]$ range.
 The final candidate is reconstructed using the squished values.
 
 \paragraph{\shilton.}
-At each acquisition step, a fresh random subspace of dimension $k$ is constructed by sampling $k$ basis functions from the surrogate \gls{gp} prior on a fixed grid of $n=50$ points in $[0,1]^d$. The original paper suggests using $n=100$, but we found that denser grids led to numerical instability.
-The subspace is centered at the current best observed function $\vu^* = \arg\min_{\vu \in \mathcal{D}} f(\vu)$.
-The $y$ values of the linear combination at the support points are soft-squished to $[-1,1]$, and the final candidate is reconstructed via the bounded parameterization.
+At each acquisition step, a fresh random subspace of dimension $k$ is constructed by sampling $k$ basis functions from the surrogate \gls{gp} prior on a set of $n=50$ points in $[0,1]^d$ drawn via \gls{lhs}. The original paper suggests using $n=100$, but we found that denser grids led to numerical instability.
+The subspace is centered at the incumbent, i.e.\ the observed function $\vu_n$ with the lowest target value $f(\vu_n)$ among $\vu_1, \ldots, \vu_N$.
+The $y$ values of the linear combination at the support points are soft-squished to $[-1,1]$, and the candidate is reconstructed via the bounded parameterization and sparsified to $k_{\max}$ support points with \gls{kmp} before target evaluation.
 
 \paragraph{\vellanky.}
 Candidates are represented as Bernstein polynomials of degree $k$ with coefficients $c \in [-1,1]^{k+1}$, sampled via \gls{lhs} and rescaled to $[-1,1]^{k+1}$.
@@ -713,6 +645,176 @@ $c^{(n+1)}_i = \frac{i}{n+1} c^{(n)}_{i-1} + \left(1 - \frac{i}{n+1}\right) c^{(
 The surrogate \gls{gp} is fit from scratch on the lifted coefficients.
 This method only supports $d=1$.
 
+\FloatBarrier
+\section{Wall-Clock Time}
+\label{app:timing}
+
+We report two timing studies.
+\Cref{tab:timings_single} reports the total time per run spent fitting the surrogate and optimizing the acquisitions, measured on a single CPU core so that all methods run on the same hardware, and averaged across benchmarks.
+\wycoff{} sits in the middle of the pack: it is cheaper than \vien{}, whose candidates carry the support points of all previous observations, and than the subspace methods \kundu{} and \shilton{} in this setting, while \vellanky{} has the cheapest acquisition since it optimizes $k+1$ polynomial coefficients only.
+The surrogate fit costs about the same for all \gls{rkhs}-based methods, since they share the same \gls{gp} on \gls{rkhs} distances.
+
+\Cref{tab:timings_cluster} breaks the times down per benchmark, as recorded during the main sweep.
+Since the sweep ran on a heterogeneous cluster, these times depend on the node each run was scheduled on and are comparable only within a row.
+The acquisition cost of \wycoff{} grows with the number of optimized parameters $k(d+m)$, and is largest on Hopper, where the policy has two outputs, and on the expensive MNIST and Pinwheel benchmarks.
+
+\begin{table}[h]
+\centering
+\caption{Total wall-clock time per run (seconds) spent fitting the surrogate and optimizing the acquisition, over the $110$-evaluation budget, on a single CPU core and averaged across benchmarks.}
+\label{tab:timings_single}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.0}
+\tiny
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l rrrrrr}
+\toprule
+\textbf{Time (s)} & Random & \kundu & \vien & \shilton & \vellanky & \wycoff \\
+\midrule
+Surrogate fit & $\text{\ding{55}}$ & $85.5$ & $88.5$ & $81.1$ & $154.1$ & $86.9$ \\
+Acquisition & $3.9$ & $254.9$ & $586.1$ & $891.7$ & $79.7$ & $202.2$ \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+\input{tables/timings_cluster}
+
+\FloatBarrier
+\section{Gaussian Process Kernel Profile}
+\label{app:kernel_profile}
+
+The profile of the surrogate \gls{gp} kernel determines the smoothness assumptions placed on the target functional $f$.
+In standard finite-dimensional \gls{bo}, the target is commonly assumed to be at least once differentiable, and the \gls{rbf} or Mat\'ern-5/2 kernel is a natural default.
+In the functional domain, however, $f$ maps functions to scalars and need not inherit the regularity of the underlying function space; for instance, evaluation-based objectives such as travel time or cumulative reward can be discontinuous as a function of the \gls{rkhs} distance between candidates.
+This motivates considering rougher kernels, including Mat\'ern-3/2 and Mat\'ern-1/2, as surrogate priors.
+
+\Cref{fig:kernel_profile_ablation} shows the performance of \wycoff{} under each of the four kernel profiles across all benchmarks, at the selected \gls{rkhs} lengthscale.
+The profile matters substantially on Ackley, Rosenbrock, Pinwheel and Sinc-1D, where the median final value varies by an order of magnitude across profiles, and hardly at all on Hartmann, Michalewicz, MNIST, Sinc-4D and Sinc-5D.
+Mat\'ern-5/2 and Mat\'ern-3/2 are the best or close to the best on most benchmarks, while the roughest profile, Mat\'ern-1/2, is the worst on most synthetic benchmarks and on Brachistochrone and Pinwheel, but the best on GramacyLee and MNIST.
+No single profile dominates uniformly, and the selected profile also varies across methods on the same benchmark (\cref{tab:hyperparams}).
+In the main experiments of \cref{sec:experiments}, each method is therefore evaluated at the profile that achieves the lowest median final value for that method and benchmark, so that no method is penalized by a suboptimal kernel choice.
+\Cref{tab:matern52} shows that the conclusions of \cref{sec:experiments} do not depend on this per-method selection: with the Mat\'ern-5/2 profile for every method, \wycoff{} is tied for first on every benchmark and metric except the final value on Brachistochrone, where \shilton{} is marginally better.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/kernel_profile_ablation.pdf}
+    \caption{Effect of the \gls{gp} kernel profile on \wycoff{} across benchmark functions. Each line corresponds to a different smoothness assumption on the surrogate.}
+    \label{fig:kernel_profile_ablation}
+\end{figure}
+
+\input{tables/matern52}
+
+\FloatBarrier
+\section{\gls{rkhs} Kernel Scale and Continuity Priors}
+\label{app:ablations}
+
+Following the previous literature, we use an \gls{rkhs} with an \gls{rbf} kernel.
+The lengthscale parameter $\ell$ determines which functions admit a sparse approximation, and therefore changes the optimization landscape.
+Since the optimal lengthscale is task-specific rather than method-specific, we consider a log-uniform grid of values $\{0.4, 0.2, 0.1, 0.05\}$, shared by all methods on a benchmark.
+The selected lengthscale is the one at which the best configuration (method and \gls{gp} profile) among the five compared methods attains its lowest median final value; ablation variants of \wycoff{} do not take part in the selection.
+
+The surrogate \gls{gp} kernel also plays a role.
+The choice of kernel defines the prior on the smoothness of the surrogate model.
+We consider four profiles: \gls{rbf}, Mat\'ern-5/2, Mat\'ern-3/2, and Mat\'ern-1/2, corresponding respectively to $\mathcal{C}^\infty$, $\mathcal{C}^2$, $\mathcal{C}^1$, and $\mathcal{C}^0$ surrogate models.
+Unlike standard \gls{bo}, where the target function is often assumed to be at least differentiable, in the functional domain the target may be discontinuous, making rougher kernels potentially more appropriate.
+The optimal profile may vary not only across target functions but also across methods, so we tune this independently for each method, showing each approach at its best.
+The selected lengthscales and profiles for each setting are reported in \cref{tab:hyperparams}.
+
+Since the lengthscale selection could favor one method, \cref{tab:lengthscale_ranks} reports the mean rank of each method over the ten main benchmarks at every lengthscale in the grid, and \cref{tab:lengthscale_full} reports the underlying medians.
+\wycoff{} has the best mean rank for both metrics at every lengthscale, and its advantage is largest at the longer lengthscales, where the sparse candidates are smoother.
+
+\input{tables/best_lengthscales}
+\input{tables/lengthscale_ranks}
+\input{tables/lengthscale_full}
+
+\FloatBarrier
+\section{Effect of Natural Gradient}
+\label{app:natural_gradient}
+
+\Cref{fig:gradient_ablation_vien} compares the optimization trajectories obtained when running the procedure of \cite{vien2018bayesian} with and without the natural gradient preconditioner.
+As established in \cref{sec:methodology}, the original updates of \cite{vien2018bayesian} correspond to natural gradient descent in a finite-dimensional parameter space; here we ablate the role of the preconditioner directly.
+The preconditioner is the pseudo-inverse $G^{+}$ of the pullback metric, computed with the default singular value cutoff of the least squares solver.
+
+The L-BFGS-B optimizer already builds an empirical approximation to the inverse Hessian from gradient history, which in practice subsumes much of the correction that the pullback metric would otherwise provide.
+For \vien{}, the difference between running with and without the natural gradient preconditioner is small on most benchmarks, with a slight advantage for the natural gradient on Brachistochrone, Michalewicz and Pendulum.
+For \wycoff{} (\cref{fig:gradient_ablation_wycoff}), where the parameterization jointly optimizes over support locations $x$ and coefficients $\alpha$, applying the natural gradient preconditioner on top of L-BFGS-B markedly \emph{hurts} performance on GramacyLee, Ackley, Hartmann, Rosenbrock, Brachistochrone, Pendulum and Pinwheel, and slightly on Hopper; the two are comparable on the projection benchmarks and MNIST, and the natural gradient is better only on Michalewicz.
+Unlike for \vien{}, whose support points are fixed during the acquisition optimization, the metric of \wycoff{} depends on the support locations and degenerates when two of them approach each other or a coefficient approaches zero, which makes the preconditioned updates poorly scaled near these points.
+These results are consistent with quasi-Newton methods being effectively able to learn the proper metric such that explicitly using the preconditioner is superfluous.
+Since the ablations in \cref{app:sampling_ablation,app:fixed_k} were run with the natural gradient variant of \wycoff{}, they should be compared with it rather than with the results of \cref{sec:experiments}.
+
+\paragraph{Regularization of the preconditioner.}
+To test whether the degradation is caused by small singular values of $G$, \cref{fig:preconditioner_ablation} compares the pseudo-inverse with truncated pseudo-inverses that discard singular values $s_i < r\, s_1$ for $r \in \{10^{-10}, 10^{-8}, 10^{-6}\}$.
+Truncation has no consistent effect beyond a small improvement on Brachistochrone: the variants remain close to each other, and all are worse than the Euclidean gradient on the benchmarks where the natural gradient hurts.
+
+\paragraph{Symmetry of the parameterization.}
+The parameterization $(\alpha, x)$ covers each sparse function $m!$ times, once per ordering of the support points (\cref{sec:methodology}).
+To test whether this symmetry hinders the optimizer, we restrict the search to a single sheet by parameterizing the first input coordinate of the support points as the normalized cumulative sum of positive gaps, which sorts the support points along that coordinate.
+\Cref{fig:constrained_ablation} shows that, on the ridge functionals and on Brachistochrone, Pendulum and Hopper, where it was run, the restriction has no appreciable effect with either gradient: the redundant sheets neither help nor hurt the multi-start optimization.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_vien.pdf}
+    \caption{Effect of natural gradient preconditioning for \vien{} across benchmark functions.}
+    \label{fig:gradient_ablation_vien}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_ours.pdf}
+    \caption{Effect of natural gradient preconditioning for \wycoff{} across benchmark functions.}
+    \label{fig:gradient_ablation_wycoff}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/preconditioner_regularization_ablation.pdf}
+    \caption{Effect of truncating the small singular values of the pullback metric in the natural gradient preconditioner of \wycoff{}, compared with the pseudo-inverse and the Euclidean gradient.}
+    \label{fig:preconditioner_ablation}
+\end{figure}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/constrained_search_ablation.pdf}
+    \caption{Effect of restricting \wycoff{} to a single sheet of the parameterization, with Euclidean and natural gradients, on the benchmarks where the single-sheet variant was run.}
+    \label{fig:constrained_ablation}
+\end{figure}
+
+\FloatBarrier
+\section{Initial Candidate Distribution}
+\label{app:sampling_ablation}
+
+At each acquisition step, the L-BFGS-B optimizer is initialized from a set of $16$ candidate starting points,
+selected as the top $16$ out of $1024$ initial guesses evaluated on the acquisition function.
+The default strategy samples these $1024$ guesses via \gls{lhs} in the parameter space, as described in \cref{app:implementation}.
+Following \cite{shilton2020sequential}, an alternative is to draw the initial guesses from the surrogate \gls{gp} prior.
+
+\Cref{fig:sampling_ablation} compares these two sampling strategies for \wycoff{} (natural gradient variant) across all benchmarks, overlayed with \shilton{} for reference.
+In the early acquisitions, the choice of initial candidate distribution produces a visible difference: prior-based sampling can lead to better or worse starting points depending on how suitable the \gls{gp} prior is for the given test function.
+As the number of acquisitions grows, the two strategies reach similar final values on most benchmarks, with differences of no consistent sign: prior-based starts are better on Hartmann and Brachistochrone, and worse on Michalewicz and, in average regret, on Hopper.
+This is consistent with the expectation that, given a sufficiently good acquisition optimizer, the final solution found by L-BFGS-B is determined mostly by the acquisition landscape rather than by the initialization, and the top-$16$ selection already filters out poor starting points effectively.
+These results suggest that the initial candidate distribution is not a critical design choice for \gls{fbo}.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/candidates_sampling_ablation.pdf}
+    \caption{Effect of the initial candidate distribution across benchmark functions.}
+    \label{fig:sampling_ablation}
+\end{figure}
+
+\FloatBarrier
+\section{Complexity Schedule}
+\label{app:fixed_k}
+
+All methods in \cref{sec:experiments} share a schedule in which the complexity $k$ grows from $1$ to $10$ every $10$ acquisitions.
+\Cref{fig:fixed_k_ablation} compares this schedule with keeping $k$ fixed at $1$, $5$ or $10$ throughout the run, for \wycoff{} (natural gradient variant).
+A single support point ($k=1$) is the worst choice on nearly every benchmark, with the exceptions of MNIST, Sinc-4D and Sinc-5D, whose optima are well approximated by very simple functions.
+Fixing $k=5$ or $k=10$ improves over the growing schedule on several ridge functionals and on the Pendulum, Pinwheel and Hopper tasks, but is worse on Brachistochrone and clearly worse on MNIST and the projection benchmarks.
+No fixed complexity dominates, and the growing schedule is the most robust choice across benchmarks; an adaptive schedule that selects $k$ from the data is a natural direction for future work.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fixed_k_ablation.pdf}
+    \caption{Growing complexity schedule compared with a fixed number of support points $k$ for \wycoff{}.}
+    \label{fig:fixed_k_ablation}
+\end{figure}
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

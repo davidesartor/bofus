@@ -1,0 +1,67 @@
+\begin{table}[h]
+\centering
+\caption{Median final and average regret at every \gls{rkhs} lengthscale, each method at its own best \gls{gp} profile. Each benchmark carries a common power of ten. Methods tied for first (see \cref{tab:lengthscale_ranks}) in bold.}
+\label{tab:lengthscale_full}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.0}
+\tiny
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l cc cc cc cc cc cc }
+\toprule
+\textbf{Benchmark} & \multicolumn{2}{c}{Random} & \multicolumn{2}{c}{\kundu} & \multicolumn{2}{c}{\vien} & \multicolumn{2}{c}{\shilton} & \multicolumn{2}{c}{\vellanky} & \multicolumn{2}{c}{\wycoff} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11} \cmidrule(lr){12-13}
+ & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} & \textbf{Avg} & \textbf{Final} \\
+\midrule
+\multicolumn{13}{l}{\textit{\gls{rkhs} lengthscale $\ell = 0.05$}} \\
+GramacyLee [$10^{-1}$] & $7.30$ & $6.37$ & $6.53$ & $6.37$ & $6.90$ & $6.37$ & $6.46$ & $6.37$ & $\mathbf{5.52}$ & $\mathbf{5.13}$ & $6.89$ & $6.37$ \\
+Ackley [$10^{1}$] & $1.69$ & $1.68$ & $1.69$ & $1.68$ & $\mathbf{1.69}$ & $1.68$ & $\mathbf{1.69}$ & $\mathbf{1.66}$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{1.69}$ & $1.68$ \\
+Hartmann [$10^{0}$] & $3.48$ & $3.48$ & $3.48$ & $3.47$ & $3.47$ & $\mathbf{3.46}$ & $\mathbf{3.47}$ & $3.47$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{3.47}$ & $\mathbf{3.46}$ \\
+Rosenbrock [$10^{4}$] & $7.87$ & $7.86$ & $7.86$ & $7.86$ & $\mathbf{7.86}$ & $\mathbf{7.84}$ & $\mathbf{7.86}$ & $7.85$ & \text{\ding{55}} & \text{\ding{55}} & $7.86$ & $7.84$ \\
+Michalewicz [$10^{0}$] & $4.37$ & $4.37$ & $4.37$ & $4.37$ & $4.37$ & $\mathbf{4.37}$ & $\mathbf{4.37}$ & $4.37$ & \text{\ding{55}} & \text{\ding{55}} & $4.37$ & $\mathbf{4.37}$ \\
+Brachistochrone [$10^{-1}$] & $2.66$ & $2.51$ & $3.03$ & $2.16$ & $1.86$ & $1.15$ & $3.53$ & $2.83$ & $0.91$ & $0.23$ & $\mathbf{0.85}$ & $\mathbf{0.19}$ \\
+MNIST [$10^{-2}$] & $2.47$ & $2.45$ & $2.82$ & $2.36$ & $2.36$ & $2.34$ & $4.01$ & $2.48$ & $\mathbf{2.34}$ & $\mathbf{2.17}$ & $2.40$ & $2.36$ \\
+Pendulum [$10^{2}$] & $5.48$ & $5.42$ & $5.34$ & $5.21$ & $5.37$ & $5.23$ & $5.31$ & $5.20$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{5.18}$ & $\mathbf{4.87}$ \\
+Pinwheel [$10^{0}$] & $1.82$ & $1.17$ & $\mathbf{0.60}$ & $\mathbf{0.41}$ & $1.95$ & $1.64$ & $\mathbf{0.61}$ & $0.57$ & $2.80$ & $2.53$ & $1.78$ & $1.16$ \\
+Hopper [$-10^{0}$] & $1.73$ & $2.09$ & $1.88$ & $2.05$ & $1.64$ & $2.07$ & $\mathbf{2.16}$ & $2.37$ & $1.46$ & $1.47$ & $\mathbf{2.12}$ & $\mathbf{2.43}$ \\
+\textit{mean rank} & $4.40$ & $4.70$ & $3.70$ & $3.20$ & $2.80$ & $2.30$ & $2.20$ & $2.90$ & $3.20$ & $3.20$ & $\mathbf{2.10}$ & $\mathbf{1.70}$ \\
+\midrule\midrule
+\multicolumn{13}{l}{\textit{\gls{rkhs} lengthscale $\ell = 0.1$}} \\
+GramacyLee [$10^{-1}$] & $6.38$ & $5.41$ & $6.57$ & $6.37$ & $5.89$ & $5.13$ & $5.79$ & $5.13$ & $\mathbf{5.49}$ & $\mathbf{5.13}$ & $6.48$ & $6.37$ \\
+Ackley [$10^{1}$] & $1.68$ & $1.65$ & $1.62$ & $\mathbf{1.50}$ & $1.69$ & $1.67$ & $\mathbf{1.58}$ & $\mathbf{1.49}$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{1.63}$ & $\mathbf{1.49}$ \\
+Hartmann [$10^{0}$] & $3.46$ & $3.45$ & $3.43$ & $3.39$ & $3.43$ & $3.37$ & $3.42$ & $3.39$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{3.34}$ & $\mathbf{3.20}$ \\
+Rosenbrock [$10^{4}$] & $7.81$ & $7.77$ & $7.73$ & $7.65$ & $7.69$ & $7.54$ & $7.69$ & $7.60$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{7.54}$ & $\mathbf{7.25}$ \\
+Michalewicz [$10^{0}$] & $4.37$ & $4.37$ & $4.36$ & $4.36$ & $4.36$ & $4.36$ & $4.36$ & $4.36$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{4.36}$ & $\mathbf{4.35}$ \\
+Brachistochrone [$10^{-1}$] & $2.04$ & $1.83$ & $1.79$ & $0.74$ & $1.24$ & $0.64$ & $2.28$ & $1.39$ & $0.91$ & $0.23$ & $\mathbf{0.69}$ & $\mathbf{0.10}$ \\
+MNIST [$10^{-2}$] & $2.43$ & $2.42$ & $2.68$ & $2.31$ & $\mathbf{2.31}$ & $2.29$ & $2.95$ & $2.31$ & $\mathbf{2.42}$ & $\mathbf{2.17}$ & $2.38$ & $2.31$ \\
+Pendulum [$10^{2}$] & $5.36$ & $5.21$ & $5.09$ & $4.80$ & $5.16$ & $4.78$ & $4.99$ & $4.77$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{4.49}$ & $\mathbf{3.46}$ \\
+Pinwheel [$10^{0}$] & $1.75$ & $\mathbf{0.99}$ & $\mathbf{0.92}$ & $\mathbf{0.88}$ & $2.25$ & $1.90$ & $1.10$ & $1.01$ & $2.80$ & $2.53$ & $1.75$ & $0.94$ \\
+Hopper [$-10^{0}$] & $1.84$ & $2.36$ & $1.87$ & $1.92$ & $1.53$ & $1.59$ & $2.23$ & $2.53$ & $1.46$ & $1.47$ & $\mathbf{2.36}$ & $\mathbf{2.96}$ \\
+\textit{mean rank} & $4.20$ & $4.40$ & $3.40$ & $3.30$ & $3.10$ & $2.90$ & $2.60$ & $2.60$ & $3.20$ & $3.20$ & $\mathbf{1.70}$ & $\mathbf{1.60}$ \\
+\midrule\midrule
+\multicolumn{13}{l}{\textit{\gls{rkhs} lengthscale $\ell = 0.2$}} \\
+GramacyLee [$10^{-1}$] & $6.08$ & $5.33$ & $6.48$ & $6.37$ & $6.34$ & $5.18$ & $\mathbf{5.48}$ & $\mathbf{5.13}$ & $\mathbf{5.52}$ & $\mathbf{5.13}$ & $\mathbf{5.79}$ & $\mathbf{5.13}$ \\
+Ackley [$10^{1}$] & $1.64$ & $1.57$ & $1.56$ & $1.43$ & $1.60$ & $1.49$ & $\mathbf{1.40}$ & $\mathbf{1.18}$ & \text{\ding{55}} & \text{\ding{55}} & $1.60$ & $\mathbf{1.52}$ \\
+Hartmann [$10^{0}$] & $3.39$ & $3.33$ & $3.19$ & $2.96$ & $3.03$ & $2.65$ & $3.09$ & $2.98$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{2.27}$ & $\mathbf{1.06}$ \\
+Rosenbrock [$10^{4}$] & $7.48$ & $7.24$ & $6.76$ & $6.04$ & $6.64$ & $5.57$ & $6.67$ & $6.24$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{4.58}$ & $\mathbf{2.01}$ \\
+Michalewicz [$10^{0}$] & $4.34$ & $4.32$ & $4.28$ & $4.21$ & $4.28$ & $4.16$ & $4.27$ & $4.23$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{3.99}$ & $\mathbf{3.67}$ \\
+Brachistochrone [$10^{-1}$] & $1.24$ & $0.98$ & $1.08$ & $0.52$ & $0.74$ & $0.33$ & $\mathbf{0.51}$ & $\mathbf{0.09}$ & $0.91$ & $0.23$ & $\mathbf{0.47}$ & $0.10$ \\
+MNIST [$10^{-2}$] & $2.31$ & $2.30$ & $2.46$ & $2.21$ & $2.27$ & $2.24$ & $2.37$ & $\mathbf{2.16}$ & $2.42$ & $\mathbf{2.17}$ & $\mathbf{2.22}$ & $\mathbf{2.16}$ \\
+Pendulum [$10^{2}$] & $5.29$ & $4.99$ & $5.08$ & $4.91$ & $5.05$ & $4.63$ & $4.74$ & $4.34$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{4.22}$ & $\mathbf{3.36}$ \\
+Pinwheel [$10^{0}$] & $1.99$ & $1.23$ & $1.75$ & $1.47$ & $2.95$ & $2.25$ & $1.73$ & $1.50$ & $2.80$ & $2.53$ & $\mathbf{1.07}$ & $\mathbf{0.12}$ \\
+Hopper [$-10^{0}$] & $\mathbf{1.64}$ & $\mathbf{1.87}$ & $1.54$ & $1.55$ & $1.46$ & $1.50$ & $1.62$ & $1.72$ & $1.46$ & $1.47$ & $\mathbf{1.69}$ & $\mathbf{1.77}$ \\
+\textit{mean rank} & $4.30$ & $4.40$ & $3.80$ & $3.60$ & $3.10$ & $3.40$ & $2.20$ & $2.50$ & $3.40$ & $3.40$ & $\mathbf{1.10}$ & $\mathbf{1.10}$ \\
+\midrule\midrule
+\multicolumn{13}{l}{\textit{\gls{rkhs} lengthscale $\ell = 0.4$}} \\
+GramacyLee [$10^{-1}$] & $5.53$ & $5.19$ & $6.56$ & $6.37$ & $5.45$ & $5.13$ & $5.50$ & $5.13$ & $5.52$ & $5.13$ & $\mathbf{4.35}$ & $\mathbf{3.42}$ \\
+Ackley [$10^{1}$] & $1.58$ & $1.46$ & $1.60$ & $1.51$ & $1.60$ & $1.54$ & $1.39$ & $1.15$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{0.66}$ & $\mathbf{0.09}$ \\
+Hartmann [$10^{0}$] & $3.14$ & $3.04$ & $2.94$ & $2.65$ & $2.56$ & $2.37$ & $2.58$ & $2.42$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{1.36}$ & $\mathbf{0.78}$ \\
+Rosenbrock [$10^{4}$] & $6.57$ & $6.10$ & $5.91$ & $5.33$ & $5.39$ & $4.75$ & $5.05$ & $4.42$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{3.04}$ & $\mathbf{0.20}$ \\
+Michalewicz [$10^{0}$] & $4.20$ & $4.11$ & $3.96$ & $3.72$ & $3.74$ & $3.38$ & $3.81$ & $3.65$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{3.22}$ & $\mathbf{2.93}$ \\
+Brachistochrone [$10^{-2}$] & $7.65$ & $3.64$ & $8.68$ & $7.06$ & $7.16$ & $5.41$ & $\mathbf{3.10}$ & $\mathbf{1.05}$ & $9.15$ & $2.26$ & $4.22$ & $1.25$ \\
+MNIST [$10^{-2}$] & $2.18$ & $2.16$ & $2.25$ & $2.09$ & $2.17$ & $2.15$ & $2.15$ & $2.09$ & $2.36$ & $2.17$ & $\mathbf{2.11}$ & $\mathbf{2.06}$ \\
+Pendulum [$10^{2}$] & $5.27$ & $5.01$ & $5.27$ & $5.17$ & $5.17$ & $5.05$ & $\mathbf{4.71}$ & $\mathbf{4.28}$ & \text{\ding{55}} & \text{\ding{55}} & $\mathbf{4.77}$ & $\mathbf{4.31}$ \\
+Pinwheel [$10^{0}$] & $2.34$ & $1.88$ & $2.33$ & $1.99$ & $3.04$ & $2.69$ & $2.26$ & $2.05$ & $2.80$ & $2.53$ & $\mathbf{1.58}$ & $\mathbf{0.60}$ \\
+Hopper [$-10^{0}$] & $1.56$ & $1.66$ & $1.46$ & $1.48$ & $1.47$ & $1.50$ & $1.53$ & $1.56$ & $1.46$ & $1.47$ & $\mathbf{1.67}$ & $\mathbf{1.76}$ \\
+\textit{mean rank} & $3.50$ & $3.80$ & $4.10$ & $4.20$ & $3.10$ & $3.50$ & $1.90$ & $2.40$ & $4.60$ & $4.00$ & $\mathbf{1.10}$ & $\mathbf{1.10}$ \\
+\bottomrule
+\end{tabular*}
+\end{table}

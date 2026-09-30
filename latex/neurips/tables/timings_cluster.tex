@@ -1,0 +1,31 @@
+\begin{table}[h]
+\centering
+\caption{Median total wall-clock time per run (seconds) spent fitting the surrogate and optimizing the acquisition, over the $110$-evaluation budget, as recorded in the main sweep on a heterogeneous cluster. Times include \textsc{jax} compilation and are only indicative across rows.}
+\label{tab:timings_cluster}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.0}
+\tiny
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l rr rr rr rr rr }
+\toprule
+\textbf{Benchmark} & \multicolumn{2}{c}{\kundu} & \multicolumn{2}{c}{\vien} & \multicolumn{2}{c}{\shilton} & \multicolumn{2}{c}{\vellanky} & \multicolumn{2}{c}{\wycoff} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11}
+ & \textbf{Fit} & \textbf{Acq.} & \textbf{Fit} & \textbf{Acq.} & \textbf{Fit} & \textbf{Acq.} & \textbf{Fit} & \textbf{Acq.} & \textbf{Fit} & \textbf{Acq.} \\
+\midrule
+GramacyLee & $66$ & $191$ & $58$ & $496$ & $49$ & $71$ & $108$ & $72$ & $86$ & $78$ \\
+Ackley & $87$ & $171$ & $63$ & $455$ & $45$ & $30$ & \text{\ding{55}} & \text{\ding{55}} & $99$ & $102$ \\
+Hartmann & $69$ & $120$ & $69$ & $437$ & $67$ & $42$ & \text{\ding{55}} & \text{\ding{55}} & $82$ & $89$ \\
+Rosenbrock & $96$ & $174$ & $74$ & $503$ & $72$ & $36$ & \text{\ding{55}} & \text{\ding{55}} & $98$ & $129$ \\
+Michalewicz & $67$ & $173$ & $88$ & $756$ & $80$ & $46$ & \text{\ding{55}} & \text{\ding{55}} & $92$ & $234$ \\
+Brachistochrone & $75$ & $291$ & $86$ & $563$ & $438$ & $1262$ & $160$ & $70$ & $90$ & $134$ \\
+MNIST & $15362$ & $1392$ & $66$ & $386$ & $442$ & $1266$ & $5469$ & $175$ & $1320$ & $1671$ \\
+Pendulum & $83$ & $182$ & $99$ & $560$ & $79$ & $31$ & \text{\ding{55}} & \text{\ding{55}} & $94$ & $143$ \\
+Pinwheel & $2040$ & $1155$ & $81$ & $509$ & $424$ & $1116$ & $820$ & $205$ & $1246$ & $1487$ \\
+Hopper & $81$ & $621$ & $102$ & $1238$ & $105$ & $671$ & $165$ & $79$ & $94$ & $1247$ \\
+Sinc-1D & $88$ & $213$ & $76$ & $559$ & $104$ & $59$ & $177$ & $67$ & $84$ & $126$ \\
+Sinc-2D & $91$ & $160$ & $103$ & $522$ & $96$ & $52$ & \text{\ding{55}} & \text{\ding{55}} & $104$ & $121$ \\
+Sinc-3D & $106$ & $189$ & $97$ & $460$ & $106$ & $56$ & \text{\ding{55}} & \text{\ding{55}} & $63$ & $109$ \\
+Sinc-4D & $82$ & $183$ & $101$ & $623$ & $89$ & $62$ & \text{\ding{55}} & \text{\ding{55}} & $67$ & $137$ \\
+Sinc-5D & $75$ & $152$ & $102$ & $570$ & $86$ & $162$ & \text{\ding{55}} & \text{\ding{55}} & $91$ & $156$ \\
+\bottomrule
+\end{tabular*}
+\end{table}

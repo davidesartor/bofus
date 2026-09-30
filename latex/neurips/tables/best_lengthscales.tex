@@ -1,33 +1,33 @@
 \begin{table}[h]
 \centering
-\caption{Best hyperparameters per method and benchmark function.
-The \gls{gp} kernel determines the order of differentiability $\mathcal{C}(\nu)$ of the surrogate model ($\mathcal{C}(\infty)$ = RBF).
-The \gls{rkhs} lengthscale $\ell$ determines which candidate functions admit a sparse approximation.}
+\caption{Selected hyperparameters per method and benchmark. The \gls{gp} kernel determines the order of differentiability $\mathcal{C}(\nu)$ of the surrogate model ($\mathcal{C}(\infty)$ = RBF). The \gls{rkhs} lengthscale $\ell$ is shared by all methods on a benchmark.}
 \label{tab:hyperparams}
-\renewcommand{\arraystretch}{1.2}
-\small
-\begin{tabular}{l | c | cccc}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.0}
+\tiny
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l c cccc}
 \toprule
-\multirow{2}{*}{\textbf{benchmark}}  & \multirow{2}{*}{\textbf{\gls{rkhs} scale}} & \multicolumn{4}{c}{\textbf{Surrogate kernel}} \\
-&  & \textbf{\wycoff} & \textbf{\kundu} & \textbf{\vien} & \textbf{\shilton} \\
+\textbf{Benchmark} & \textbf{\gls{rkhs} scale} & \multicolumn{4}{c}{\textbf{Surrogate kernel}} \\
+\cmidrule(lr){3-6}
+ & & \kundu & \vien & \shilton & \wycoff \\
 \midrule
+GramacyLee & $0.4$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ & $\mathcal{C}(0)$ \\
+Ackley & $0.4$ & $\mathcal{C}(2)$ & $\mathcal{C}(0)$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ \\
+Hartmann & $0.4$ & $\mathcal{C}(1)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(2)$ \\
+Rosenbrock & $0.4$ & $\mathcal{C}(2)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(1)$ \\
+Michalewicz & $0.4$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(2)$ & $\mathcal{C}(2)$ & $\mathcal{C}(\infty)$ \\
 \midrule
-\textbf{Sinc-1D}         & $0.05$ & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        \\
-\textbf{Sinc-2D}         & $0.1$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(2)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(\infty)$   \\
-\textbf{Sinc-3D}         & $0.2$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        & $\mathcal{C}(\infty)$   \\
-\textbf{Sinc-4D}         & $0.4$  & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(2)$        & $\mathcal{C}(1)$        \\
+Brachistochrone & $0.2$ & $\mathcal{C}(0)$ & $\mathcal{C}(1)$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ \\
+MNIST & $0.4$ & $\mathcal{C}(0)$ & $\mathcal{C}(1)$ & $\mathcal{C}(0)$ & $\mathcal{C}(0)$ \\
+Pendulum & $0.2$ & $\mathcal{C}(1)$ & $\mathcal{C}(0)$ & $\mathcal{C}(2)$ & $\mathcal{C}(1)$ \\
+Pinwheel & $0.2$ & $\mathcal{C}(1)$ & $\mathcal{C}(0)$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ \\
+Hopper & $0.1$ & $\mathcal{C}(0)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(1)$ \\
 \midrule
-\midrule
-\textbf{GramacyLee}      & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(0)$        & $\mathcal{C}(2)$        \\
-\textbf{Ackley}          & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(0)$        \\
-\textbf{Hartmann}        & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(\infty)$   \\
-\textbf{Rosenbrock}      & $0.4$  & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   \\
-\midrule
-\midrule
-\textbf{Brachistochrone} & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(2)$        & $\mathcal{C}(0)$        & $\mathcal{C}(1)$        \\
-\textbf{MNIST}           & $0.4$  & $\mathcal{C}(0)$        & $\mathcal{C}(0)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(0)$        \\
-\textbf{Pendulum}        & $0.2$  & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   & $\mathcal{C}(1)$        & $\mathcal{C}(\infty)$   \\
-\textbf{Pinwheel}        & $0.2$  & $\mathcal{C}(2)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        & $\mathcal{C}(1)$        \\
+Sinc-1D & $0.05$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(2)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(1)$ \\
+Sinc-2D & $0.1$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(\infty)$ \\
+Sinc-3D & $0.2$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ & $\mathcal{C}(1)$ & $\mathcal{C}(\infty)$ \\
+Sinc-4D & $0.4$ & $\mathcal{C}(1)$ & $\mathcal{C}(2)$ & $\mathcal{C}(0)$ & $\mathcal{C}(\infty)$ \\
+Sinc-5D & $0.4$ & $\mathcal{C}(1)$ & $\mathcal{C}(\infty)$ & $\mathcal{C}(0)$ & $\mathcal{C}(\infty)$ \\
 \bottomrule
-\end{tabular}
+\end{tabular*}
 \end{table}
