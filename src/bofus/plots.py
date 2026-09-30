@@ -114,7 +114,7 @@ def widen_ylim_to_decade(ax):
 @functools.cache
 def brachistochrone_optimal_time() -> float:
     """Cycloid travel time, the constant the recorded brachistochrone y is offset by."""
-    from src.targets import Brachistochrone
+    from bofus.targets import Brachistochrone
 
     _, optimal_time = Brachistochrone().find_brachistochrone()
     return float(optimal_time)
@@ -465,7 +465,7 @@ def plot_mnist_activations(df: pd.DataFrame, save_dir: str, methods: dict[str, s
 def plot_brachistochrone_path(df: pd.DataFrame, save_dir: str, methods: dict[str, str]):
     os.makedirs(save_dir, exist_ok=True)
     df = df[df["target_fn"] == "brachistochrone"]
-    from src.targets import Brachistochrone
+    from bofus.targets import Brachistochrone
 
     targ = Brachistochrone()
     method_colors = {m: f"C{i}" for i, m in enumerate(methods.keys())}
@@ -513,7 +513,7 @@ def animate_hopper(df: pd.DataFrame, save_dir: str, methods: dict[str, str]):
     os.makedirs(save_dir, exist_ok=True)
     df = df[df["target_fn"] == "hopper"]
     from matplotlib.animation import PillowWriter
-    from src.targets.hopper import HoppingRobot, keypoints
+    from bofus.targets.hopper import HoppingRobot, keypoints
 
     robot = HoppingRobot()
     ts = np.arange(robot.n_steps) / robot.n_steps
@@ -577,7 +577,7 @@ def make_ridge(name: str):
     """Ridge target, matching the definitions in run.py."""
     import vlse
 
-    from src import targets
+    from bofus import targets
 
     profiles = {
         "gramacylee": vlse.GramacyLee(normalized=True),
@@ -593,7 +593,7 @@ def sample_rkhs_functions(
     d: int, n: int, basis_points: int, lengthscale: float, seed: int
 ) -> list:
     """Random RKHS functions, drawn like the initial acquisitions in run.py."""
-    from src import kernels, rkhs
+    from bofus import kernels, rkhs
 
     kernel = rkhs.RKHS(
         metric=kernels.Euclidean(),
@@ -616,7 +616,7 @@ def monte_carlo_evaluator(target, kernel):
     rather than paying a dispatch per example, and the (d, modes, n) array weights_at
     broadcasts to is never materialized. f travels as its arrays, the kernel is shared.
     """
-    from src import rkhs, targets
+    from bofus import rkhs, targets
 
     @functools.partial(jax.jit, static_argnames="n")
     def value(n: int, key, x: jnp.ndarray, a: jnp.ndarray):

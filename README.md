@@ -7,11 +7,11 @@ We propose a method for Functional Bayesian Optimization (FBO) that searches a s
 
 ```
 .
-├── run.py               # Main entry point: run a single experiment
 ├── sweep.sh             # SLURM sweep script: launches all experiments
-├── summary.py           # Aggregate raw results into parquet tables
-├── plots.py             # Generate all figures and tables from the parquet tables
-├── src/
+├── src/bofus/
+│   ├── run.py           # Main entry point: run a single experiment
+│   ├── summary.py       # Aggregate raw results into parquet tables
+│   ├── plots.py         # Generate all figures and tables from the parquet tables
 │   ├── gp.py            # Gaussian process surrogate models
 │   ├── rkhs.py          # RKHS function representations
 │   ├── kernels.py       # Kernel functions (RBF, Matérn)
@@ -49,9 +49,9 @@ The archive contains:
 To regenerate the tables from the raw `.pkl` files (e.g. after running new experiments):
 
 ```bash
-uv run summary.py
+uv run -m bofus.summary
 # or rescan only the configs written in the last 15 minutes
-uv run summary.py -u 15m
+uv run -m bofus.summary -u 15m
 ```
 
 ## Reproducing Figures
@@ -59,7 +59,7 @@ uv run summary.py -u 15m
 With the results archive extracted and the tables in place:
 
 ```bash
-uv run plots.py
+uv run -m bofus.plots
 ```
 
 This writes all figures to `plots/`, organized as:
@@ -87,7 +87,7 @@ This writes all figures to `plots/`, organized as:
 A single run takes a method, target function, and hyperparameters:
 
 ```bash
-uv run run.py \
+uv run -m bofus.run \
     --method ours \
     --target_fn brachistochrone \
     --profile matern52 \
@@ -126,8 +126,8 @@ The full sweep covers 18 method variants × 4 profiles × 4 lengthscales × 16 s
 After the sweep completes, regenerate the tables and plots:
 
 ```bash
-uv run summary.py
-uv run plots.py
+uv run -m bofus.summary
+uv run -m bofus.plots
 ```
 
 ## Benchmark Functions
@@ -137,7 +137,7 @@ The scalar test functions come from [`jaxvlse`](https://pypi.org/project/jaxvlse
 ```python
 import vlse
 
-from src.targets import Ridge
+from bofus.targets import Ridge
 
 # Hartmann3 as a functional benchmark (d=3 dimensional input)
 target = Ridge(vlse.Hartmann3(normalized=True))

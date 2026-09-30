@@ -243,7 +243,7 @@ result=results/${target_fn}/\${variant_dir}/\${profile}_lengthscale_\${lengthsca
 log_dir=logs/${target_fn}/\${variant_dir}_\${profile}_\${lengthscale}
 mkdir -p "\$log_dir"
 
-uv run run.py \
+uv run -m bofus.run \
     --method=\$method \
     --profile=\$profile \
     --target_fn=${target_fn} \

@@ -16,7 +16,7 @@ import pickle
 
 import vlse
 
-from src import gp, kernels, acquisition, rkhs, targets
+from bofus import gp, kernels, acquisition, rkhs, targets
 
 jax.config.update("jax_enable_x64", True)
 
