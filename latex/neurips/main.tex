@@ -212,7 +212,7 @@ Our contributions can be summarized as follows:
 \begin{enumerate}
     \item We provide an extensive discussion of disparate existing methods for \gls{fbo}, providing a unifying lens and showing that \cite{vien2018bayesian} can be interpreted as natural gradient descent in a finite-dimensional parameter space.
     \item We introduce a ridge function \cite{pinkus2015ridge} approach to defining \gls{fbo} problems from finite dimensional \gls{bo} problems, which allows the use of test problems familiar to the \gls{bo} community.
-    We release an open source python implementation of over $70$ popular \gls{bo} benchmarks and their extension to the functional domain,
+    We release an open source python implementation of $48+$ popular \gls{bo} benchmarks and their extension to the functional domain,
     as well as several new realistic \gls{fbo} problems.
     \item We introduce a new method for \gls{fbo}, which we call \wycoff{}. We conduct an extensive simulation campaign across \gls{fbo} hyperparameters and a range of synthetic and real test problems, finding that the proposed method performs best overall.
     We also release the first open source codebase for \gls{fbo} at \url{https://github.com/davidesartor/bofus}.
@@ -462,120 +462,108 @@ The update direction of \cite{vien2018bayesian}, expressed as a coefficient vect
 
 \section{Experimental Results}
 \label{sec:experiments}
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=0.49\textwidth]{figures/f_visualizations/brachistochrone_path.pdf}
-    \includegraphics[width=0.49\textwidth]{figures/f_visualizations/mnist_activations.pdf}
-    \caption{Learned brachistochrone paths (left) and MNIST activation functions (right). Transparent lines show individual runs; bold lines show the average across runs.}
-    \label{fig:f_vis}
-\end{figure}
 
-We compare \wycoff{} against \vien, \vellanky, \kundu, and \shilton, described in \cref{sec:related_work}.
-We evaluate on a diverse set of functional optimization problems spanning multiple input dimensions and problem complexities, including simple toy problems of function projection, ridge functions derived from classical \gls{bo} benchmarks, and more complex tasks like basic control problems and functional hyperparameter optimization.
-All targets are non-negative to enable log-scale plots, although the optimal achievable value is not necessarily exactly zero in all settings.
+We compare \wycoff{} against \vien, \vellanky, \kundu, and \shilton, described in \cref{sec:related_work}, on function projection problems, on ridge functionals derived from classical \gls{bo} benchmarks, and on real-world tasks including control problems and functional hyperparameter optimization.
+All objectives are minimized; their optimal value is not necessarily zero, and is negative for Hopper.
 
 We investigate two quantitative metrics of interest: the best target function value at the end of the optimization budget, and the average regret (or area under the curve) accumulated along the trajectory.
-For each metric, we report the median across runs together with a 95\% \gls{ci}.
-As a baseline, we report the value of the corresponding metric obtained following the same complexity schedule described in \cref{app:implementation} but without optimizing the acquisitions; this represents the performance obtainable by simply sampling from the \gls{rkhs} at random.
-Across the benchmarks reported in \cref{tab:regret}, \wycoff{} achieves the lowest average and final regret in the substantial majority of settings, and is competitive with the best alternative in the remaining cases.
-Further details on the experimental setup are provided in \cref{app:implementation}.
+For each metric, we report the median across 16 to 32 independent runs together with a 95\% \gls{ci} for the median.
+All methods share the same budget and complexity schedule: after 10 initial designs, the size $k$ of the acquisition problem (number of support points, subspace dimension or polynomial degree) grows from $1$ to $10$, increasing every $10$ acquisitions, for a total of $110$ evaluations (\cref{app:implementation}); \cref{app:fixed_k} compares this schedule with a fixed $k$.
+The \gls{rkhs} lengthscale is selected per benchmark and the \gls{gp} kernel per method and benchmark (\cref{app:kernel_profile,app:ablations}).
+As a baseline, we report the value obtained by following the same schedule without optimizing the acquisitions (\random), i.e.\ sampling from the \gls{rkhs} at random.
+A breakdown of wall-clock times is given in \cref{app:timing}.
 
 \paragraph{Projections.}
-As a simple toy problem, we consider projecting a fixed target function $\tilde{f}$ onto the \gls{rkhs}.
-The objective is to minimize the \gls{mse} between the candidate function and the target.
-We use the \emph{sinc} function as the target, scaled and centered so that its main oscillations lie within the unit domain $[0,1]^d$:
+As a simple toy problem, we project a fixed target function $\tilde{f}$ onto the \gls{rkhs}, minimizing the squared $L^2$ distance between the candidate and the target.
+We use the \emph{sinc} function, scaled and centered so that its main oscillations lie within the unit domain $[0,1]^d$:
 \begin{equation}
     \tilde{f}(x) = \frac{1}{d}\sum_{i=1}^d \operatorname{sinc}\!\left(2 \pi x_i - \pi\right);
     \quad
-    f(u) = \Vert \tilde{f} - u\Vert_{L^2} \,.
+    f(\vu) = \Vert \tilde{f} - \vu\Vert_{L^2}^2 \,,
 \end{equation}
-We consider input dimensions $d \in \{1, 2, 3, 4\}$ to evaluate how the methods perform on a similar task at varying dimensionalities.
-Results are shown in \cref{fig:method_comparison_sinc}.
+where the integral is computed with a midpoint quadrature on a tensor grid of about $4096$ points.
+We consider input dimensions $d \in \{1, 2, 3, 4, 5\}$ to evaluate how the methods perform on a similar task at varying dimensionalities.
+The selected \gls{rkhs} lengthscale doubles with each added dimension up to Sinc-4D, which already selects the largest value of the grid, so Sinc-5D is run at $\ell = 0.4$ only.
 
 \paragraph{Ridge Functions.}
 A large corpus of benchmark functions exists for standard \gls{bo}, but comparatively few for \gls{fbo}.
 We propose a systematic approach to adapt such benchmarks to the functional setting, extending the concept of \emph{ridge functions} to the functional domain.
-Given a scalar benchmark $\bar{f}:\R^d\to\R$ and a candidate function $\vu \in \Hs$, we define the functional benchmark as
+Given a scalar benchmark $\bar{f}:[0,1]^d\to\R$ and a candidate function $\vu: [0,1]^d \to \R$, we define the functional benchmark as
 \begin{equation}
-    f(\vu) = \bar{f}\!\left(b + L[\vu]\right),
+    f(\vu) = \bar{f}\!\left(\sigma\big(b + L[\vu]\big)\right), \qquad L_i[\vu] = \int_{[0,1]^d} w_i(x)\, \vu(x)\, dx, \quad i=1,\ldots,d,
 \end{equation}
-where $b\in\R^d$ is a random bias and $L:\Hs\to\R^d$ is a vector of linear functionals, with each component given by:
-\begin{equation}
-    L_i[\vu] = \sum_j \inner{g_{ij}}{\vu}_\Hs,
-\end{equation}
-for some $g_{ij} \in \Hs$.
-If each $g_{ij}$ has a sparse representation $g_{ij} = a_{ij} \kernelH(\cdot, x_{ij})$ for some weight $a_{ij}\in\R$ and support point $x_{ij}\in[0,1]^d$, the reproducing property gives $\inner{g_{ij}}{\vu}_\Hs = a_{ij} \vu(x_{ij})$, and the functional benchmark reduces to an efficiently computable expression.
-If the test function $\bar{f}$ has a bounded domain, we apply a soft squish to ensure that its inputs lie in the correct range.
+where $\sigma$ is the logistic function applied elementwise, $b\sim\mathcal{U}(-1,1)^d$ is a random bias, and each weight $w_i$ is a random trigonometric polynomial with frequencies $\Vert \omega \Vert_1 \leq 4$ and decaying amplitudes, normalized to $\Vert w_i \Vert_{L^2}=1$.
+The functionals $L_i$ are not represented by a sparse element of $\Hs$, so the benchmark does not favor sparse candidates by construction.
+For \gls{rbf} \gls{rkhs} candidates the integrals factorize across dimensions and are computed in closed form via the complex error function; for other candidate representations we use a midpoint quadrature.
+Evaluating $L_i$ by averaging $w_i \vu$ at $n$ random points instead yields a Monte Carlo estimate with $O(1/\sqrt{n})$ error, and we verify this convergence in \cref{app:convergence}.
 
-We provide a \textsc{jax}~\citep{jax2018github} compatible open-source implementation of the virtual library of \cite{surjanovic2013virtual}, comprising more than 70 benchmark functions, together with the functional ridge extension.
-In this work we consider four popular benchmarks of increasing input dimensionality: \emph{GramacyLee} ($d=1$), \emph{Ackley} ($d=2$), \emph{Hartmann} ($d=3$), and \emph{Rosenbrock} ($d=4$).
-Results are shown in \cref{fig:method_comparison_benchmarks}.
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/method_comparison.pdf}
+    \caption{Method comparison across benchmark functions: projections (top), functional ridges (middle) and real-world tasks (bottom). Each plot shows the running best target function value (median and 95\% \gls{ci}) as a function of the number of acquisitions.}
+    \label{fig:method_comparison}
+\end{figure}
+We provide a \textsc{jax}~\citep{jax2018github} compatible open-source implementation of the virtual library of \cite{surjanovic2013virtual}, comprising $48+$ benchmark functions, together with the functional ridge extension.
+In this work we consider five popular benchmarks of increasing input dimensionality: \emph{GramacyLee} ($d=1$), \emph{Ackley} ($d=2$), \emph{Hartmann} ($d=3$), \emph{Rosenbrock} ($d=4$), and \emph{Michalewicz} ($d=5$).
 
 \paragraph{Real World Tasks.}
 We next consider problems where the functional parameter has a direct physical or model interpretation.
 The \emph{Brachistochrone} problem asks for the curve $y:[0,1]\to\R$ passing through two given points such that a bead placed at the start point and sliding along it under gravity reaches the end in the minimum time.
 The optimal solution is known to be a cycloid and the optimal travel time is known.
-%However, no closed-form expression $y(x)$ exists, as the cycloid is defined only implicitly via parametric equations.
 Efforts to analytically solve the Brachistochrone problem precipitated the development of variational analysis, and we think this makes the Brachistochrone a suitable testbed for \gls{fbo}.
 We optimize for the travel time in excess of that of the cycloid.
 
-The second benchmark is the optimization of the activation function of a neural network. A better activation can speed up convergence and increase accuracy. We train a simple \gls{mlp} with two hidden layers of 256 neurons on the MNIST digit recognition task \citep{lecun1998mnist}. Our setup differs slightly from \cite{vien2018bayesian}: we measure the average test accuracy across multiple training runs rather than a single seed, and instead of optimizing for the activation directly, we optimize an offset relative to the popular ReLU activation.
+The second benchmark is the optimization of the activation function of a neural network. A better activation can speed up convergence and increase accuracy. We train a simple \gls{mlp} with two hidden layers of 256 neurons on the MNIST digit recognition task \citep{lecun1998mnist}. Our setup differs slightly from \cite{vien2018bayesian}: we measure the average test error across multiple training runs rather than a single seed, and instead of optimizing for the activation directly, we optimize an offset relative to the popular ReLU activation.
 
-We also consider two control tasks where the policy itself is the functional parameter being optimized. The first is the classic underactuated pendulum environment from OpenAI Gym \citep{brockman2016openai}, where the objective is to swing up and balance the pendulum by applying a torque $\vu:\R^2\to\R$ as a function of the current angle and angular velocity. The objective is the expected cumulative reward over an episode, evaluated over 50 rollouts.
+We also consider three control tasks where the policy itself is the functional parameter being optimized. The first is the classic underactuated pendulum environment from OpenAI Gym \citep{brockman2016openai}, where the objective is to swing up and balance the pendulum by applying a torque $\vu:\R^2\to\R$ as a function of the current angle and angular velocity. The objective is the expected cumulative reward over an episode, evaluated over 50 rollouts.
 This problem is more challenging than the typical \gls{rl} setting since we are optimizing the policy without access to state transitions; gradient-based policy optimization cannot be applied.
 
 The second is a more complex environment in which a double-jointed robot arm must interact with a pinwheel and rotate it to a given target angle. The policy is a zero-force (i.e., desired) trajectory of the shoulder joint $\vu:[0,1]\to\mathbb{R}$ for a joint-space impedance controller \cite{hermus2021exploiting}. The stiffness and damping parameters in the controller are fixed, as well as the zero-force equilibrium point of the elbow joint. 
 The objective is the cosine distance between the final pinwheel angle and the desired one.
-This problem is a well-known challenging trajectory optimization problem, as the double-jointed robot arm should make contact with and detach from the pinwheel multiple times while respecting the arm's kinematics. Solving such a hybrid optimization problem (i.e., finding both continuous motions and a discrete contact sequence) involves significant challenges to standard solvers due to the discontinuity of the gradient at the contact transitions~\cite{posa2014direct}.
-%
-Results are shown in \cref{fig:method_comparison_realworld}.
+The arm must make and break contact with the pinwheel multiple times while respecting its kinematics; such hybrid problems, with both continuous motions and a discrete contact sequence, are challenging for standard solvers due to the discontinuity of the gradient at the contact transitions~\cite{posa2014direct}.
+
+The third, \emph{Hopper}, is a planar single-leg robot (body, thigh, shank and foot) with rigid ground contact and Coulomb friction, which must jump as high as possible.
+The policy $\vu:[0,1]\to\R^2$ gives the desired hip and knee angle offsets over the $2$\,s episode, tracked by a torque-limited joint PD controller, with the ankle held at its initial angle.
+The objective is the negative maximum height of the body after the first landing, in metres.
+As in the pinwheel task, intermittent contact makes the objective discontinuous in the policy.
 
 
 \begin{figure}[t]
     \centering
-    \begin{subfigure}{\textwidth}
-        \centering
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc1d}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc2d}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc3d}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/sinc4d}
-        \caption{Projections.}
-        \label{fig:method_comparison_sinc}
-    \end{subfigure}
-    \\
-    \begin{subfigure}{\textwidth}
-        \centering
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/gramacylee}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/ackley}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/hartmann}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/rosenbrock}
-        \caption{Functional Ridges.}
-        \label{fig:method_comparison_benchmarks}
-    \end{subfigure}
-    \\
-    \begin{subfigure}{\textwidth}
-        \centering
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/brachistochrone}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/pendulum}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/pinwheel}
-        \includegraphics[width=0.24\textwidth]{figures/method_comparison/mnist}
-        \caption{Real-world Tasks.}
-        \label{fig:method_comparison_realworld}
-    \end{subfigure}
-    \caption{Method comparison across benchmark functions. Each plot shows the running best target function value (median and 95\% \gls{ci}) as a function of the number of acquisitions.}
-    \label{fig:method_comparison}
+    \includegraphics[width=0.4\textwidth]{figures/brachistochrone_path.pdf}
+    \hspace{0.04\textwidth}
+    \includegraphics[width=0.4\textwidth]{figures/mnist_activations.pdf}
+    \caption{Best functions found by \wycoff{}: brachistochrone paths (left) and MNIST activation functions, i.e.\ ReLU plus the learned offset (right). Transparent lines show individual runs; bold lines show the average across runs.}
+    \label{fig:f_vis}
 \end{figure}
 
-\input{tables/results_combined_ci}
+
+\input{tables/results_avg_ci}
+\input{tables/results_final_ci}
+
+\paragraph{Results.}
+\Cref{fig:method_comparison} and \cref{tab:regret_average,tab:regret_final} report the results.
+On the projections, \wycoff{} attains the lowest median average and final regret on Sinc-1D, Sinc-2D and Sinc-3D, and the lowest or tied median average regret on Sinc-4D and Sinc-5D, where \vien{} has a marginally lower final value.
+\wycoff{} also attains the lowest median average and final regret on all five ridge functionals, with the largest margins on Ackley, Hartmann and Rosenbrock, where the competitors improve only moderately over random sampling.
+On the real-world tasks the gaps are smaller.
+\wycoff{} has the lowest median on Pendulum, Pinwheel and Hopper, and also on MNIST, although there all methods lie within about a tenth of a percentage point of test error and the \glspl{ci} of \wycoff, \kundu{} and \shilton{} overlap.
+On Brachistochrone, \shilton{} reaches a slightly lower final regret, although \wycoff{} has the lower median average regret.
+We attribute this to \shilton's search being centered at the incumbent and spanned by smooth \gls{gp} prior samples, which favors the local refinement of a smooth, non-sparse optimum such as the cycloid late in the run.
+\Cref{fig:f_vis} shows the functions found by \wycoff{} on Brachistochrone and MNIST.
+
 
 \section{Discussion, Conclusion and Future Work}
+\label{sec:discussion}
 
-We proposed a new method for \gls{fbo} which optimizes over a sparse sub-manifold of an \gls{rkhs}, jointly searching over basis point locations and coefficients. We showed that the gradient descent procedure of \cite{vien2018bayesian} is equivalent to natural gradient descent in a finite-dimensional parameter space, and that this perspective generalizes to any smooth parameterization. We deployed our method on a range of synthetic and real-world benchmarks, finding that it consistently matches or outperforms existing methods.
+We proposed a new method for \gls{fbo} which optimizes over a sparse subset of an \gls{rkhs}, jointly searching over basis point locations and coefficients. We showed that the gradient descent procedure of \cite{vien2018bayesian} is equivalent to natural gradient descent in a finite-dimensional parameter space, and that this perspective generalizes to any smooth parameterization. We deployed our method on a range of synthetic and real-world benchmarks, where it attained the best or tied-best median performance on most of them.
 
-Our experiments use a fixed complexity schedule shared across all methods. While this choice was made to allow a fair comparison, it is possible that some methods would benefit from a tailored schedule, and finding a consistent scheduling strategy is important future work. Additionally, our grid of selected \gls{rkhs} kernel and lengthscale grid is relatively coarse, and a more thorough exploration may reveal a stronger configuration for one or more comparators.
-Finally, the optimization landscape of the acquisition function over the joint $(\alpha, x)$ space is highly non-convex, and although multi-start L-BFGS-B works well in practice, we have no guarantee of finding the global optimum.
+\paragraph{Limitations.}
+Our analysis is not a convergence or regret guarantee: density of the sparse sets only ensures that good sparse approximations exist as $m$ grows, and the acquisition landscape over the joint $(\alpha, x)$ space is highly non-convex, so multi-start L-BFGS-B, although effective in practice, may not find its global optimum.
+The method is best suited to objectives that can be approximately minimized by functions with few support points, and a smooth, non-sparse optimum such as the cycloid may be better served by dense bases, as the Brachistochrone results suggest.
+Our experiments use a complexity schedule shared across all methods, which some methods may not benefit from equally (\cref{app:fixed_k}), and a relatively coarse grid of \gls{rkhs} lengthscales and \gls{gp} kernels, so a finer search might reveal stronger configurations for one or more comparators.
+Finally, the cost of each acquisition grows with the number of support points and observations, which, as for any \gls{gp}-based method, limits the approach to moderate evaluation budgets (\cref{app:timing}).
 
-We see several promising directions for future work. First, the choice of complexity $m$ is currently a hyperparameter; an adaptive schedule which grows $m$ as the optimization progresses, or which selects $m$ based on the data, would be a natural extension. Second, our framework treats each acquisition independently; warm-starting the optimization from previously good candidates may further improve sample efficiency. Third, the natural gradient perspective opens up the use of other parameterizations, including those which enforce structural priors such as monotonicity or periodicity. Finally, the empirical success of our method on control problems suggests that \gls{fbo} may be a viable strategy for policy optimization in low-data regimes; a more thorough study of this application is warranted.
+We see several promising directions for future work. First, the complexity $m$ is currently set by a fixed schedule; an adaptive schedule which selects $m$ based on the data would be a natural extension. Second, our framework treats each acquisition independently; warm-starting the optimization from previously good candidates may further improve sample efficiency. Third, the natural gradient perspective opens up the use of other parameterizations, including those which enforce structural priors such as monotonicity or periodicity. Finally, the results on control problems suggest that \gls{fbo} may be a viable strategy for policy optimization in low-data regimes; a more thorough study of this application is warranted.
 
 \bibliographystyle{plain}
 \bibliography{references}
@@ -604,21 +592,8 @@ In the main experiments of \cref{sec:experiments}, each method is evaluated at t
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc1d}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc2d}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc3d}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/sinc4d}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/gramacylee}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/ackley}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/hartmann}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/rosenbrock}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/brachistochrone}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/pendulum}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/pinwheel}
-    \includegraphics[width=0.24\textwidth]{figures/kernel_profile_ablation/mnist}
-    \caption{Effect of the \gls{gp} kernel profile across benchmark functions. Each line corresponds to a different smoothness assumption on the surrogate.}
+    \includegraphics[width=\textwidth]{figures/kernel_profile_ablation.pdf}
+    \caption{Effect of the \gls{gp} kernel profile on \wycoff{} across benchmark functions. Each line corresponds to a different smoothness assumption on the surrogate.}
     \label{fig:kernel_profile_ablation}
 \end{figure}
 
@@ -655,40 +630,14 @@ The natural gradient remains a theoretically illuminating lens through which to 
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc1d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc2d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc3d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/sinc4d}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/gramacylee}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/ackley}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/hartmann}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/rosenbrock}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/brachistochrone}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/pendulum}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/pinwheel}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_vien/mnist}
+    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_vien.pdf}
     \caption{Effect of natural gradient preconditioning for \vien{} across benchmark functions.}
     \label{fig:gradient_ablation_vien}
 \end{figure}
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc1d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc2d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc3d}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/sinc4d}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/gramacylee}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/ackley}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/hartmann}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/rosenbrock}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/brachistochrone}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/pendulum}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/pinwheel}
-    \includegraphics[width=0.24\textwidth]{figures/natural_gradient_ablation_ours/mnist}
+    \includegraphics[width=\textwidth]{figures/natural_gradient_ablation_ours.pdf}
     \caption{Effect of natural gradient preconditioning for \wycoff{} across benchmark functions.}
     \label{fig:gradient_ablation_wycoff}
 \end{figure}
@@ -713,20 +662,7 @@ These results suggest that the initial candidate distribution is not a critical 
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc1d}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc2d}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc3d}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/sinc4d}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/gramacylee}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/ackley}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/hartmann}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/rosenbrock}
-    \\
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/brachistochrone}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/pendulum}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/pinwheel}
-    \includegraphics[width=0.24\textwidth]{figures/candidates_sampling_ablation/mnist}
+    \includegraphics[width=\textwidth]{figures/candidates_sampling_ablation.pdf}
     \caption{Effect of the initial candidate distribution across benchmark functions.}
     \label{fig:sampling_ablation}
 \end{figure}
