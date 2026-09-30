@@ -182,8 +182,8 @@ if __name__ == "__main__":
 
     combos = []
     for target_fn in listdir(f"{RESULTS_DIR}/"):
-        # the written tables sit next to the target dirs
-        if not os.path.isdir(f"{RESULTS_DIR}/{target_fn}"):
+        # the written tables and the plots dir sit next to the target dirs
+        if not os.path.isdir(f"{RESULTS_DIR}/{target_fn}") or target_fn == "plots":
             continue
         for method in listdir(f"{RESULTS_DIR}/{target_fn}/"):
             for profile_and_scale in listdir(f"{RESULTS_DIR}/{target_fn}/{method}/"):

@@ -23,7 +23,7 @@ PLOTS_DIR = os.environ.get("PLOTS_DIR", "plots")
 AXES_RECT = (0.22, 0.13, 0.75, 0.79)
 
 # these two are read as a physical quantity, not as a regret, so they stay linear
-LINEAR_TARGETS = ("pendulum", "brachistochrone")
+LINEAR_TARGETS = ("pendulum", "brachistochrone", "pinwheel")
 
 # what the minimised y actually is on each problem, in its own units
 YLABELS = {
