@@ -36,8 +36,9 @@ declare -A TARGET_RESOURCES=(
     [mnist]="24G 06:00:00"
 )
 
-# the budget goes in target order, so the short seeds are scheduled first
-targets=(
+# the budget goes in target order, so the short seeds are scheduled first; TARGETS="a b" limits a
+# watcher to those targets
+all_targets=(
     sinc1d
     sinc2d
     sinc3d
@@ -54,6 +55,7 @@ targets=(
     hopper
     mnist
 )
+targets=(${TARGETS:-${all_targets[@]}})
 
 variants=(
     "random"
@@ -211,7 +213,7 @@ submit_sweep() {
     local runs=() profile lengthscale variant_dir seed
     while read -r run; do
         read -r profile lengthscale variant_dir seed _ <<< "$run"
-        [[ -e "results/$target_fn/$variant_dir/${profile}_lengthscale_${lengthscale}/seed_${seed}.pkl" ]] && continue
+        [[ -e "results/neurips/$target_fn/$variant_dir/${profile}_lengthscale_${lengthscale}/seed_${seed}.pkl" ]] && continue
         [[ -n "${INFLIGHT["$target_fn $run"]:-}" ]] && continue
         runs+=("$run")
         (( ${#runs[@]} >= budget )) && break
@@ -252,7 +254,7 @@ mkdir -p "\$JAX_COMPILATION_CACHE_DIR"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NPY_NUM_THREADS=1
 
 # a requeued task may find its seed already done
-result=results/${target_fn}/\${variant_dir}/\${profile}_lengthscale_\${lengthscale}/seed_\${seed}.pkl
+result=results/neurips/${target_fn}/\${variant_dir}/\${profile}_lengthscale_\${lengthscale}/seed_\${seed}.pkl
 [[ -e "\$result" ]] && exit 0
 
 log_dir=logs/${target_fn}/\${variant_dir}_\${profile}_\${lengthscale}
