@@ -34,7 +34,7 @@
 %    \usepackage[nonatbib]{neurips_2026}
 
 \PassOptionsToPackage{numbers, compress}{natbib}
-\usepackage{neurips_2026}
+\usepackage[main, final]{neurips_2026}
 \usepackage[utf8]{inputenc} % allow utf-8 input
 \usepackage[T1]{fontenc}    % use 8-bit T1 fonts
 \usepackage{hyperref}       % hyperlinks
@@ -110,8 +110,27 @@ Bayesian Optimization on Function Spaces via \\ Sparse RKHS Manifolds
 
 
 \author{%
-  Anonymous Authors \\
-  % Author information removed for anonymous submission. \\
+  \textbf{Davide Sartor} \\
+  Department of Mathematics and Statistics \\
+  University of Massachusetts Amherst \\
+  \texttt{dsartor@umass.edu} \\
+  \And
+  \textbf{Meghan E.\ Huber} \\
+  Department of Mechanical \\
+  and Industrial Engineering \\
+  University of Massachusetts Amherst \\
+  \texttt{mehuber@umass.edu} \\
+  \AND
+  \textbf{Donghyun Kim} \\
+  Manning College of Information \\
+  and Computer Sciences \\
+  University of Massachusetts Amherst \\
+  \texttt{donghyunkim@cs.umass.edu} \\
+  \And
+  \textbf{Nathan Wycoff} \\
+  Department of Mathematics and Statistics \\
+  University of Massachusetts Amherst \\
+  \texttt{nwycoff@umass.edu} \\
 }
 
 
@@ -187,7 +206,7 @@ Our contributions can be summarized as follows:
     We release an open source python implementation of over $70$ popular \gls{bo} benchmarks and their extension to the functional domain,
     as well as several new realistic \gls{fbo} problems.
     \item We introduce a new method for \gls{fbo}, which we call \wycoff{}. We conduct an extensive simulation campaign across \gls{fbo} hyperparameters and a range of synthetic and real test problems, finding that the proposed method performs best overall.
-    We also release the first open source codebase for \gls{fbo}.
+    We also release the first open source codebase for \gls{fbo} at \url{https://github.com/davidesartor/bofus}.
 \end{enumerate}
 
 \section{Background}
