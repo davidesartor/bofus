@@ -1,7 +1,7 @@
 ## Overview
 
-Code for submission (NeurIPS 2026) for reproducibility.
-We propose a method for Functional Bayesian Optimization (FBO) that searches a sparse sub-manifold of an RKHS by jointly optimizing over basis point locations and coefficients. The repository contains implementations of Ours and four baselines (Vien, Kundu, Shilton, Vellanki), along with the ~50 BO benchmark functions of the [`jaxvlse`](https://pypi.org/project/jaxvlse/) package extended to the functional domain.
+Code for the NeurIPS 2026 paper *Bayesian Optimization on Function Spaces via Sparse RKHS Manifolds*.
+We propose a method for Functional Bayesian Optimization (FBO) that searches a sparse subset of an RKHS by jointly optimizing over basis point locations and coefficients. The repository contains implementations of Ours and four baselines (Vien, Kundu, Shilton, Vellanki), along with the 48+ BO benchmark functions of the [`jaxvlse`](https://pypi.org/project/jaxvlse/) package extended to the functional domain.
 
 ## Repository Structure
 
@@ -25,8 +25,7 @@ We propose a method for Functional Bayesian Optimization (FBO) that searches a s
 ## Installation
 
 ```bash
-# Requires Python 3.12+. We use uv for dependency management.
-pip install uv
+# Requires Python 3.12+ and uv (https://docs.astral.sh/uv/getting-started/installation/)
 uv sync
 ```
 
@@ -147,3 +146,7 @@ target = Ridge(vlse.Hartmann3(normalized=True))
 ```
 
 `normalized=True` puts the profile on the unit hypercube with its global minimum at 0, which is what `Ridge` feeds it.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

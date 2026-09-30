@@ -231,6 +231,10 @@ __marimo__/
 
 # sweep artifacts
 .summary_cache/
-.sweep_manifests/
+.sweep_manifests*/
+sweep_*.log
 seed_report.html
 time_report.html
+
+# local artifacts
+outputs/
