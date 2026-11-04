@@ -169,8 +169,19 @@ class GaussianProcess(NamedTuple):
         log_l0, log_rho, log_g = jax.tree.map(lambda z: z[best], results.x)
         l0, g = jnp.exp(log_l0), jnp.exp(log_g)
         rho = rho_prefactor(l0) * jnp.exp(log_rho)
+        return GaussianProcess.condition(f, y, profile, l0, rho, g)
 
-        # infer the remaining parameters
+    @staticmethod
+    @eqx.filter_jit
+    def condition(
+        f: rkhs.RBFMixture,  # assumed to be (o, k, m, d)
+        y: Float[Array, "o"],
+        profile: kernels.Profile,
+        l0: Float[Array, "k d"],
+        rho: Float[Array, "k"],
+        g: Scalar,
+    ):
+        """Condition on the observations at fixed (l0, rho, g), profiling out b and nu."""
         Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
         mask = jnp.isfinite(y)
         Koo = utils.mask_covariance(Koo, mask)

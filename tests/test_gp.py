@@ -41,22 +41,34 @@ def test_posterior_interpolates_observations():
 
 
 def test_padded_observations_are_inert():
-    """NaN-marked padded entries must not change the posterior on the real data."""
+    """NaN-marked padded entries must not change the likelihood or the posterior."""
     fs, ys = make_functions(6, seed=2)
-    fitted = fit(fs, ys)
-
     pad = 4
     padded_fs = jax.tree.map(
         lambda z: jnp.concatenate([z, jnp.ones((pad, *z.shape[1:]))]), fs
     )
-    padded = fit(padded_fs, jnp.concatenate([ys, jnp.full(pad, jnp.nan)]))
+    padded_ys = jnp.concatenate([ys, jnp.full(pad, jnp.nan)])
 
+    # the fit is multimodal, so compare at fixed hyperparameters rather than
+    # requiring both optimizer runs to land in the same local optimum
+    fitted = fit(fs, ys)
+    params = (fitted.profile, fitted.l0, fitted.rho, fitted.g)
+
+    def loglik(l0, f, y):
+        Koo = fitted.profile(gp.pairwise_distance(l0, fitted.rho, f))
+        return gp.loglikelihood(Koo + fitted.g * jnp.eye(len(y)), y)
+
+    value_and_grad = jax.value_and_grad(loglik)
+    value, grad = value_and_grad(fitted.l0, fs, ys)
+    padded_value, padded_grad = value_and_grad(fitted.l0, padded_fs, padded_ys)
+    np.testing.assert_allclose(value, padded_value, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(grad, padded_grad, rtol=1e-3, atol=1e-5)
+
+    padded = gp.GaussianProcess.condition(padded_fs, padded_ys, *params)
     mean, cov = fitted.predict(fs)
     padded_mean, padded_cov = padded.predict(fs)
-    # the hyperparameter optimizer trajectory shifts slightly with the padded size
-    np.testing.assert_allclose(mean, padded_mean, rtol=1e-3, atol=1e-4)
-    np.testing.assert_allclose(cov, padded_cov, rtol=3e-2, atol=1e-4)
-
+    np.testing.assert_allclose(mean, padded_mean, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(cov, padded_cov, rtol=1e-4, atol=1e-5)
 
 def test_fit_stays_finite_on_duplicated_observations():
     """A design with repeated functions makes Koo rank-deficient; fit/predict must not turn to NaN."""

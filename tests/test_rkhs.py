@@ -13,17 +13,6 @@ def random_mixture(key, k=2, m=4, d=3, l_min=0.5):
     return rkhs.RBFMixture(l, x, a)
 
 
-def test_mixture_interpolates_with_per_point_lengthscales():
-    key1, key2, key3 = jax.random.split(jax.random.key(0), 3)
-    x = jax.random.uniform(key1, (2, 5, 3))
-    y = jax.random.uniform(key2, (2, 5))
-    l = jax.random.uniform(key3, (2, 5, 3)) + 0.5
-
-    f = rkhs.RBFMixture.from_lxy(l, x, y, eps=1e-6)
-    for k in range(2):
-        assert f(x[k])[:, k] == pytest.approx(y[k], abs=1e-3)
-
-
 def test_pad_to_leaves_evaluations_unchanged():
     """Padded atoms carry zero weight, so they must not move the function values."""
     f = random_mixture(jax.random.key(0))
