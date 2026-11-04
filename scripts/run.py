@@ -18,6 +18,7 @@ from targets import (
     PinWheel,
     Brachistochrone,
     HoppingRobot,
+    MujocoTask,
     MNIST,
 )
 from vlse import (
@@ -138,6 +139,19 @@ if __name__ == "__main__":
         brachistochrone=Brachistochrone,
         hopper=HoppingRobot,
         mnist=MNIST,
+        **{
+            f"{name}_{mode}": partial(MujocoTask, env_id, mode)
+            for name, env_id, modes in [
+                ("inverted_pendulum", "InvertedPendulum-v5", ["closed"]),
+                ("inverted_double_pendulum", "InvertedDoublePendulum-v5", ["closed"]),
+                ("reacher", "Reacher-v5", ["closed"]),
+                ("swimmer", "Swimmer-v5", ["open", "closed"]),
+                ("mj_hopper", "Hopper-v5", ["open", "closed"]),
+                ("walker2d", "Walker2d-v5", ["open", "closed"]),
+                ("half_cheetah", "HalfCheetah-v5", ["open", "closed"]),
+            ]
+            for mode in modes
+        },
     )
 
     profiles_options = dict(

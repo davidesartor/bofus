@@ -20,7 +20,7 @@ class Pendulum:
         self.n_rollouts = n_rollouts
         self.max_episode_length = max_episode_length
         self.discount_factor = discount_factor
-        self.env = gym.make("Pendulum-v1")
+        self.env = gym.make("Pendulum-v1", max_episode_steps=max_episode_length)
 
     def __call__(self, f: Callable[[Float[Array, "2"]], Scalar]) -> Scalar:
         returns = [self.rollout(f, seed) for seed in range(self.n_rollouts)]
@@ -44,10 +44,9 @@ class Pendulum:
             action = f(jnp.array([theta, v]))
 
             # scale the action to the action space of the environment
-            action = (action + 1.0) / 2.0  # [-1, 1] -> [0, 1]
             lb = self.env.action_space.low
             ub = self.env.action_space.high
-            action = lb + (action + 1.0) * 0.5 * (ub - lb)  # [0, 1] -> [lb, ub]
+            action = lb + (action + 1.0) * 0.5 * (ub - lb)  # [-1, 1] -> [lb, ub]
 
             # step the environment
             obs, reward, terminated, truncated, _ = self.env.step(action)
