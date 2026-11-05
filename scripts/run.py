@@ -53,11 +53,17 @@ def run(
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
+    fixed_l: float | None = None,
     save_path: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Sequential EI loop doubling the basis size, each stage doubling the observations."""
+    """Sequential EI loop doubling the basis size, each stage doubling the observations.
+
+    fixed_l shares one squared lengthscale across all atoms instead of adapting it.
+    """
     key = jr.key(seed)
+    if fixed_l is not None:
+        l_range = (jnp.asarray(fixed_l), jnp.asarray(fixed_l))
     d, k = target_fn.d, target_fn.k
     schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
 
@@ -94,6 +100,7 @@ def run(
                 x_range,
                 a_range,
                 batch_size=batch_size,
+                fixed_l=fixed_l,
             )
 
             # Evaluate and store each candidate, truncating the batch at the budget
@@ -170,6 +177,12 @@ if __name__ == "__main__":
     parser.add_argument("--m", type=int, default=16)
     parser.add_argument("--initial_acquisitions", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument(
+        "--fixed_l",
+        type=float,
+        default=None,
+        help="share this squared lengthscale across atoms (non-adaptive ablation)",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
@@ -177,7 +190,8 @@ if __name__ == "__main__":
     target_fn = target_fns[args.target_fn]()
     profile = profiles_options[args.profile]
 
-    save_dir = f"{args.results_dir}/{args.target_fn}/ours_adaptive/{args.profile}"
+    method = "ours_adaptive" if args.fixed_l is None else f"ours_fixed_l{args.fixed_l:g}"
+    save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
 
@@ -188,6 +202,7 @@ if __name__ == "__main__":
         m=args.m,
         initial_acquisitions=args.initial_acquisitions,
         batch_size=args.batch_size,
+        fixed_l=args.fixed_l,
         save_path=save_path,
         verbose=args.verbose,
     )

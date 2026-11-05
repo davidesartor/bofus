@@ -117,6 +117,7 @@ def optimize_expected_improvement(
     n_best: int = 4,
     sigma_around_best: float = 1e-2,
     eta: float = 2.0,
+    fixed_l: float | None = None,
 ) -> rkhs.RBFMixture:
     """Maximise Monte Carlo batch EI over RBF mixtures, screening probes then L-BFGS-B.
 
@@ -124,6 +125,9 @@ def optimize_expected_improvement(
     points by sigma_around_best in unit-cube coordinates. Starts are Boltzmann
     sampled from marginal log EI at temperature eta, the incumbent is the best
     posterior mean over the observations.
+
+    With fixed_l every atom shares that squared lengthscale (the non-adaptive
+    ablation): l is held constant and only centers and amplitudes are optimized.
     """
     _, k, m, d = surrogate.x.l.shape
     mask = jnp.isfinite(surrogate.y)
@@ -132,6 +136,13 @@ def optimize_expected_improvement(
     l_floor = jnp.maximum(surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2) * 1.01
     l_range = (l_range[0].clip(min=l_floor), l_range[1])
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
+    if fixed_l is not None:
+        # keep a nonzero span for the unit transforms, l itself is overridden below
+        log_l_range = (jnp.log(fixed_l) - 1.0, jnp.log(fixed_l) + 1.0)
+
+    def fix(l: Float[Array, "..."]) -> Float[Array, "..."]:
+        return l if fixed_l is None else jnp.full_like(l, fixed_l)
+
     bounds = tuple(zip(log_l_range, x_range, a_range))
 
     def marginals(f: rkhs.RBFMixture) -> tuple[Float[Array, "n"], Float[Array, "n"]]:
@@ -156,7 +167,7 @@ def optimize_expected_improvement(
         log_l = utils.rescale(log_l, *log_l_range)
         x = utils.rescale(x, *x_range)
         a = utils.rescale(a, *a_range)
-        return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
+        return rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a.squeeze(-1))
 
     # incumbent as the best posterior mean over the observations, consistent with the nugget
     mu_obs, _ = marginals(surrogate.x)
@@ -187,7 +198,7 @@ def optimize_expected_improvement(
 
     def loss(lxa):
         log_l, x, a = lxa
-        f = rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
+        f = rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a)
         mu, cov = surrogate.predict(f)
         if batch_size == 1:
             mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
@@ -203,4 +214,4 @@ def optimize_expected_improvement(
     results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
     best = jnp.nanargmin(results.f)
     log_l, x, a = jax.tree.map(lambda z: z[best], results.x)
-    return rkhs.RBFMixture(l=jnp.exp(log_l), x=x, a=a)
+    return rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a)
