@@ -40,3 +40,4 @@ from .ridge import Ridge
 from .projection import Projection
 from .classic_control import ClassicControl
 from .mujoco import Mujoco
+from .box2d import Box2D

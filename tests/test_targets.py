@@ -5,7 +5,7 @@ import pytest
 from vlse import Ackley, GramacyLee, Hartmann3, Michalewicz, Rosenbrock
 
 from bofus import rkhs
-from targets import ClassicControl, Mujoco, Projection, Ridge
+from targets import Box2D, ClassicControl, Mujoco, Projection, Ridge
 
 PROFILES = [
     GramacyLee(normalized=True),
@@ -63,6 +63,14 @@ CONTROL = [
     (Mujoco, "reacher", "closed", 10, 2),
     (Mujoco, "hopper", "open", 1, 3),
     (Mujoco, "hopper", "closed", 11, 3),
+    (Mujoco, "pusher", "closed", 23, 7),
+    (Mujoco, "ant", "open", 1, 8),
+    (Mujoco, "humanoid", "open", 1, 17),
+    (Mujoco, "humanoid_standup", "open", 1, 17),
+    (Box2D, "lunar_lander", "closed", 8, 2),
+    (Box2D, "bipedal_walker", "open", 1, 4),
+    (Box2D, "bipedal_walker", "closed", 24, 4),
+    (Box2D, "bipedal_walker_hardcore", "closed", 24, 4),
 ]
 
 
@@ -92,6 +100,8 @@ def test_bounded_observations_map_linearly_to_unit_cube():
 
 def test_unknown_task_and_mode_are_rejected():
     with pytest.raises(ValueError, match="unknown"):
-        Mujoco("ant")
+        Mujoco("car_racing")
+    with pytest.raises(ValueError, match="unknown"):
+        Box2D("car_racing")
     with pytest.raises(ValueError, match="mode"):
         ClassicControl("pendulum", "feedback")

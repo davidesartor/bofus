@@ -29,6 +29,8 @@ class GymControl:
     to [0, 1]. Unbounded ones are standardized with statistics of random-action
     rollouts (seeds disjoint from the evaluation ones) and squashed by a sigmoid.
     A rollout that goes non-finite stops there, keeping the return collected so far.
+    Every rollout runs in a freshly made env: a reused Box2D world drifts across
+    resets, so the same seed would not reproduce the same return.
     """
 
     optimum: float | None = None
@@ -46,7 +48,7 @@ class GymControl:
         self.env_id = env_id
         self.mode = mode
         self.n_rollouts = n_rollouts
-        self.env = gym.make(env_id, max_episode_steps=max_episode_steps)
+        self.env = self.make_env(max_episode_steps)
         self.horizon = self.env.spec.max_episode_steps
         self.action_low = self.env.action_space.low.astype(np.float64)
         self.action_high = self.env.action_space.high.astype(np.float64)
@@ -62,6 +64,9 @@ class GymControl:
             self.obs_mean, self.obs_std = self.observation_statistics(
                 n_calibration_rollouts
             )
+
+    def make_env(self, max_episode_steps: int | None = None) -> gym.Env:
+        return gym.make(self.env_id, max_episode_steps=max_episode_steps)
 
     def __call__(self, f: Callable[[Float[Array, "d"]], Float[Array, "k"]]) -> Scalar:
         returns = [self.rollout(f, seed) for seed in range(self.n_rollouts)]
@@ -83,7 +88,8 @@ class GymControl:
     def rollout(
         self, f: Callable[[Float[Array, "d"]], Float[Array, "k"]], seed: int
     ) -> float:
-        obs, _ = self.env.reset(seed=seed)
+        env = self.make_env(self.horizon)
+        obs, _ = env.reset(seed=seed)
 
         # open loop: the actions do not depend on the state, so evaluate them all at once
         if self.mode == "open":
@@ -96,25 +102,28 @@ class GymControl:
         total = 0.0
         for t in range(self.horizon):
             action = plan[t] if self.mode == "open" else policy(obs)
-            obs, reward, terminated, truncated, _ = self.env.step(self.scale_action(action))
+            obs, reward, terminated, truncated, _ = env.step(self.scale_action(action))
             if not (np.isfinite(reward) and np.isfinite(obs).all()):
                 break
             total += float(reward)
             if terminated or truncated:
                 break
+        env.close()
         return total
 
     def observation_statistics(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         rng = np.random.default_rng(0)
         observations = []
         for i in range(n):
-            obs, _ = self.env.reset(seed=10_000 + i)
+            env = self.make_env(self.horizon)
+            obs, _ = env.reset(seed=10_000 + i)
             observations.append(obs)
             for _ in range(self.horizon):
                 action = rng.uniform(self.action_low, self.action_high)
-                obs, _, terminated, truncated, _ = self.env.step(action)
+                obs, _, terminated, truncated, _ = env.step(action)
                 observations.append(obs)
                 if terminated or truncated:
                     break
+            env.close()
         observations = np.stack(observations)
         return observations.mean(0), np.maximum(observations.std(0), 1e-2)

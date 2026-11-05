@@ -16,8 +16,10 @@ from targets import (
     Projection,
     ClassicControl,
     Mujoco,
+    Box2D,
     classic_control,
     mujoco,
+    box2d,
 )
 from vlse import (
     GramacyLee,
@@ -149,6 +151,7 @@ if __name__ == "__main__":
             for problem, envs in [
                 (ClassicControl, classic_control.ENVS),
                 (Mujoco, mujoco.ENVS),
+                (Box2D, box2d.ENVS),
             ]
             for name, (_, modes) in envs.items()
             for mode in modes

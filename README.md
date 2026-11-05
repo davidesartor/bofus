@@ -16,7 +16,7 @@ We propose a method for Functional Bayesian Optimization (FBO) that searches a s
 │   ├── rkhs.py          # RKHS function representations
 │   ├── kernels.py       # Kernel functions (RBF, Matérn)
 │   ├── acquisition.py   # Acquisition functions and optimization
-│   └── targets/         # One file per problem class: ridge, projection, classic_control, mujoco
+│   └── targets/         # One file per problem class: ridge, projection, classic_control, mujoco, box2d
 ├── results/             # Experiment outputs (see below)
 └── plots/               # Generated figures
 ```

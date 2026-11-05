@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "einops>=0.8.2",
     "equinox>=0.13.6",
-    "gymnasium[mujoco]>=1.2.3",
+    "gymnasium[box2d,mujoco]>=1.2.3",
     "ipykernel>=7.2.0",
     "jax>=0.9.2",
     "jaxtyping>=0.3.9",
