@@ -53,12 +53,15 @@ def run(
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
     fixed_l: float | None = None,
     distance: gp.Distance = "rkhs",
+    squash: rkhs.Squash = "none",
     save_path: str | None = None,
     verbose: bool = False,
 ) -> dict:
     """Sequential EI loop doubling the basis size, each stage doubling the observations.
 
     fixed_l shares one squared lengthscale across all atoms instead of adapting it.
+    squash maps f into the nominal output range before the target sees it, the GP
+    and the acquisition still work on f itself.
     """
     key = jr.key(seed)
     if fixed_l is not None:
@@ -71,8 +74,9 @@ def run(
     fs = rkhs.RBFMixture.from_lhs(
         key_init, (initial_acquisitions, k, schedule[0], d), l_range, x_range, a_range
     )
+    evaluate = lambda f: target_fn(rkhs.squashed(f, squash))
     ys = [
-        target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
+        evaluate(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
     ]
     ys = jnp.asarray(ys)
 
@@ -105,7 +109,7 @@ def run(
             # Evaluate and store each candidate, truncating the batch at the budget
             for j in range(min(batch_size, stage_end - i)):
                 f = jax.tree.map(lambda z: z[j], f_batch)
-                y = target_fn(f)
+                y = evaluate(f)
                 fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
                 ys = ys.at[i].set(y)
 
@@ -121,7 +125,13 @@ def run(
             optimum = getattr(target_fn, "optimum", None)
             optimum = np.nan if optimum is None else optimum
             np.savez(
-                save_path, l=fs.l[:i], x=fs.x[:i], a=fs.a[:i], y=ys[:i], optimum=optimum
+                save_path,
+                l=fs.l[:i],
+                x=fs.x[:i],
+                a=fs.a[:i],
+                y=ys[:i],
+                optimum=optimum,
+                squash=squash,
             )
 
     total_acquisitions = i
@@ -183,6 +193,18 @@ if __name__ == "__main__":
         default="rkhs",
         help="distance between functions in the GP kernel",
     )
+    parser.add_argument(
+        "--squash",
+        choices=["none", "tanh"],
+        default="none",
+        help="output map applied to f before the target (none: the target clips)",
+    )
+    parser.add_argument(
+        "--a_max",
+        type=float,
+        default=1.0,
+        help="amplitude box [-a_max, a_max]; tanh needs a_max > 1 to reach saturation",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
@@ -192,6 +214,8 @@ if __name__ == "__main__":
 
     method = "ours_adaptive" if args.fixed_l is None else f"ours_fixed_l{args.fixed_l:g}"
     method += "" if args.distance == "rkhs" else f"_{args.distance}"
+    method += "" if args.squash == "none" else f"_{args.squash}"
+    method += "" if args.a_max == 1.0 else f"_amax{args.a_max:g}"
     save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
@@ -204,7 +228,9 @@ if __name__ == "__main__":
         initial_acquisitions=args.initial_acquisitions,
         batch_size=args.batch_size,
         fixed_l=args.fixed_l,
+        a_range=(jnp.asarray(-args.a_max), jnp.asarray(args.a_max)),
         distance=args.distance,
+        squash=args.squash,
         save_path=save_path,
         verbose=args.verbose,
     )

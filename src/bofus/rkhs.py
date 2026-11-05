@@ -1,4 +1,4 @@
-from typing import NamedTuple, Self
+from typing import Callable, Literal, NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
 import jax.numpy as jnp
@@ -52,6 +52,22 @@ class RBFMixture(NamedTuple):
         x = jnp.concatenate([self.x, self.x], axis=-2)
         a = jnp.concatenate([self.a / 2, self.a / 2], axis=-1)
         return self._replace(l=l, x=x, a=a)
+
+
+Squash = Literal["none", "tanh"]
+
+
+def squashed(f: RBFMixture, squash: Squash) -> Callable[[Float[Array, "d"]], Float[Array, "k"]]:
+    """The function the target sees, h = squash(f), with the GP still modelling f.
+
+    "none" hands f over as is (targets clip to their nominal [-1, 1] range), "tanh"
+    maps it smoothly into (-1, 1) so every candidate is feasible.
+    """
+    if squash == "none":
+        return f
+    if squash == "tanh":
+        return lambda x: jnp.tanh(f(x))
+    raise ValueError(f"unknown squash {squash!r}, pick from {Squash.__args__}")
 
 
 @eqx.filter_jit

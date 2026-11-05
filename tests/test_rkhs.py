@@ -123,3 +123,15 @@ def test_l2_distance_is_a_metric_on_samples():
     assert rkhs.l2_distance(f1, f1) == pytest.approx(0.0, abs=1e-3)
     assert rkhs.l2_distance(f1, f2) == pytest.approx(rkhs.l2_distance(f2, f1), rel=1e-5)
     assert bool((rkhs.l2_distance(f1, f2) > 0.0).all())
+
+
+def test_squashed_none_is_identity_and_tanh_stays_in_range():
+    f = random_mixture(jax.random.key(0))
+    f = f._replace(a=5.0 * f.a)  # large amplitudes leave [-1, 1]
+    t = jax.random.uniform(jax.random.key(1), (7, 3))
+    assert rkhs.squashed(f, "none") is f
+    h = jax.vmap(rkhs.squashed(f, "tanh"))(t)
+    assert h == pytest.approx(jnp.tanh(jax.vmap(f)(t)), abs=1e-6)
+    assert jnp.all(jnp.abs(h) < 1.0)
+    with pytest.raises(ValueError):
+        rkhs.squashed(f, "clip")
