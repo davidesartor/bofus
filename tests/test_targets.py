@@ -5,7 +5,7 @@ import pytest
 from vlse import Ackley, GramacyLee, Hartmann3, Michalewicz, Rosenbrock
 
 from bofus import rkhs
-from targets import Projection, Ridge
+from targets import ClassicControl, Mujoco, Projection, Ridge
 
 PROFILES = [
     GramacyLee(normalized=True),
@@ -54,3 +54,44 @@ def test_wrong_number_of_outputs_is_rejected(target):
 
 def test_ridge_optimum_is_none_without_normalization():
     assert Ridge(Ackley(d=2)).optimum is None
+
+
+CONTROL = [
+    (ClassicControl, "pendulum", "closed", 3, 1),
+    (ClassicControl, "pendulum", "open", 1, 1),
+    (ClassicControl, "mountain_car", "closed", 2, 1),
+    (Mujoco, "reacher", "closed", 10, 2),
+    (Mujoco, "hopper", "open", 1, 3),
+    (Mujoco, "hopper", "closed", 11, 3),
+]
+
+
+@pytest.mark.parametrize("problem, name, mode, d, k", CONTROL)
+def test_control_tasks_are_finite_and_deterministic(problem, name, mode, d, k):
+    t = problem(name, mode, n_rollouts=2, max_episode_steps=20)
+    assert (t.d, t.k, t.optimum) == (d, k, None)
+    f = jax.tree.map(lambda z: z[0], random_functions(1, d, k=k))
+    y = t(f)
+    assert bool(jnp.isfinite(y))
+    assert float(y) == float(t(f))
+
+
+@pytest.mark.parametrize("problem, name, mode, d, k", CONTROL[::2])
+def test_control_tasks_reject_wrong_number_of_outputs(problem, name, mode, d, k):
+    t = problem(name, mode, n_rollouts=1, max_episode_steps=5)
+    f = jax.tree.map(lambda z: z[0], random_functions(1, d, k=k + 1))
+    with pytest.raises(ValueError, match=f"{k} outputs"):
+        t(f)
+
+
+def test_bounded_observations_map_linearly_to_unit_cube():
+    t = ClassicControl("mountain_car", "closed")
+    np.testing.assert_allclose(t.normalize_observation(t.obs_low), 0.0)
+    np.testing.assert_allclose(t.normalize_observation(t.obs_high), 1.0)
+
+
+def test_unknown_task_and_mode_are_rejected():
+    with pytest.raises(ValueError, match="unknown"):
+        Mujoco("ant")
+    with pytest.raises(ValueError, match="mode"):
+        ClassicControl("pendulum", "feedback")

@@ -38,9 +38,5 @@ def evaluate_on(
 
 from .ridge import Ridge
 from .projection import Projection
-from .gymnasium import Pendulum
-from .pinwheel import PinWheel
-from .neuralnetworks import MNIST
-from .brachistochrone import Brachistochrone
-from .hopper import HoppingRobot
-from .mujoco import MujocoTask
+from .classic_control import ClassicControl
+from .mujoco import Mujoco

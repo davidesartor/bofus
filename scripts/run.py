@@ -14,12 +14,10 @@ from targets import (
     TestFunction,
     Ridge,
     Projection,
-    Pendulum,
-    PinWheel,
-    Brachistochrone,
-    HoppingRobot,
-    MujocoTask,
-    MNIST,
+    ClassicControl,
+    Mujoco,
+    classic_control,
+    mujoco,
 )
 from vlse import (
     GramacyLee,
@@ -146,22 +144,13 @@ if __name__ == "__main__":
         hartmann_projection=partial(Projection, Hartmann3(normalized=True)),
         rosenbrock_projection=partial(Projection, Rosenbrock(d=4, normalized=True)),
         michalewicz_projection=partial(Projection, Michalewicz(d=5, normalized=True)),
-        pendulum=Pendulum,
-        pinwheel=PinWheel,
-        brachistochrone=Brachistochrone,
-        hopper=HoppingRobot,
-        mnist=MNIST,
         **{
-            f"{name}_{mode}": partial(MujocoTask, env_id, mode)
-            for name, env_id, modes in [
-                ("inverted_pendulum", "InvertedPendulum-v5", ["closed"]),
-                ("inverted_double_pendulum", "InvertedDoublePendulum-v5", ["closed"]),
-                ("reacher", "Reacher-v5", ["closed"]),
-                ("swimmer", "Swimmer-v5", ["open", "closed"]),
-                ("mj_hopper", "Hopper-v5", ["open", "closed"]),
-                ("walker2d", "Walker2d-v5", ["open", "closed"]),
-                ("half_cheetah", "HalfCheetah-v5", ["open", "closed"]),
+            f"{name}_{mode}": partial(problem, name, mode)
+            for problem, envs in [
+                (ClassicControl, classic_control.ENVS),
+                (Mujoco, mujoco.ENVS),
             ]
+            for name, (_, modes) in envs.items()
             for mode in modes
         },
     )

@@ -9,7 +9,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from targets import Brachistochrone, Projection
+from targets import Projection
 from vlse import GramacyLee
 
 TEMPLATE = Path(__file__).parent / "viz_template.html"
@@ -29,20 +29,6 @@ LABELS = dict(
         TARGET_LABEL="Gramacy-Lee target",
         DOMAIN_LABEL="QUADRATURE DOMAIN",
     ),
-    brachistochrone=dict(
-        TITLE="Brachistochrone Descent Run",
-        BLURB=(
-            'Bayesian optimization in function space: each query is an RBF mixture '
-            '<span class="mono">f</span> with <span id="mCount">8</span> basis points '
-            'defining a descent curve from (-3, 1) to (0, 0), and the objective is the '
-            'descent time in excess of the optimal cycloid. Scrub iterations to watch '
-            'the search bend the candidate toward the brachistochrone.'
-        ),
-        METRIC="time gap (s)",
-        METRIC_SHORT="gap",
-        TARGET_LABEL="optimal cycloid",
-        DOMAIN_LABEL="DESCENT DOMAIN",
-    ),
 )
 
 
@@ -60,25 +46,6 @@ def gramacylee_data(l, x, a, grid_points):
     profile = (profile - target.shift) / target.scale
     profile = [float(v) if 0.0 <= ti <= 1.0 else None for v, ti in zip(profile, t)]
     return t, [0.0, 1.0], profile, curves, x.squeeze((1, 3)), l.squeeze((1, 3))
-
-
-def brachistochrone_data(l, x, a, grid_points):
-    target = Brachistochrone()
-    (x0, y0), (x1, y1) = target.initial_position, target.final_position
-    span = x1 - x0
-    t = jnp.linspace(x0 - 0.05 * span, x1 + 0.05 * span, grid_points)
-    tn = (t - x0) / span
-
-    # endpoint-pinning offset and straight-line clip, as in the target itself
-    f_vals = mixture_curves(l, x, a, tn)
-    f_ends = mixture_curves(l, x, a, jnp.array([0.0, 1.0]))
-    offset = (1 - tn) * (y0 - f_ends[:, :1]) + tn * (y1 - f_ends[:, 1:])
-    curves = jnp.minimum(f_vals + offset, y0 + (y1 - y0) * tn)
-
-    cycloid, _ = target.find_brachistochrone()
-    profile = [float(cycloid(ti)) if x0 <= ti <= x1 else None for ti in np.asarray(t)]
-    centers = x0 + span * x.squeeze((1, 3))
-    return t, [x0, x1], profile, curves, centers, span**2 * l.squeeze((1, 3))
 
 
 def doubling_stages(n, initial_acquisitions):
@@ -109,9 +76,7 @@ def main():
     l, x, a, y = data["l"], data["x"], data["a"], data["y"]
     n = len(y)
 
-    builder = dict(
-        gramacylee_projection=gramacylee_data, brachistochrone=brachistochrone_data
-    )[target]
+    builder = dict(gramacylee_projection=gramacylee_data)[target]
     t, domain, profile, curves, centers, lengthscales = builder(
         l, x, a, args.grid_points
     )
