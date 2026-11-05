@@ -153,8 +153,8 @@ if __name__ == "__main__":
                 (Mujoco, mujoco.ENVS),
                 (Box2D, box2d.ENVS),
             ]
-            for name, (_, modes) in envs.items()
-            for mode in modes
+            for name in envs
+            for mode in ("closed", "open")
         },
     )
 

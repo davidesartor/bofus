@@ -2,12 +2,11 @@
 
 from targets.control import GymControl, Mode
 
-# name -> (env id, policy modes worth running); the lander starts with a random
-# push and the hardcore terrain is random per episode, so both need feedback
+# name -> env id, each registered both open and closed loop
 ENVS = {
-    "lunar_lander": ("LunarLanderContinuous-v3", ("closed",)),
-    "bipedal_walker": ("BipedalWalker-v3", ("closed", "open")),
-    "bipedal_walker_hardcore": ("BipedalWalkerHardcore-v3", ("closed",)),
+    "lunar_lander": "LunarLanderContinuous-v3",
+    "bipedal_walker": "BipedalWalker-v3",
+    "bipedal_walker_hardcore": "BipedalWalkerHardcore-v3",
 }
 
 
@@ -21,4 +20,4 @@ class Box2D(GymControl):
     def __init__(self, name: str, mode: Mode = "closed", **kwargs):
         if name not in ENVS:
             raise ValueError(f"unknown Box2D task {name!r}, pick from {list(ENVS)}")
-        super().__init__(ENVS[name][0], mode, **kwargs)
+        super().__init__(ENVS[name], mode, **kwargs)

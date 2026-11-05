@@ -2,10 +2,10 @@
 
 from targets.control import GymControl, Mode
 
-# name -> (env id, policy modes worth running)
+# name -> env id, each registered both open and closed loop
 ENVS = {
-    "pendulum": ("Pendulum-v1", ("closed", "open")),
-    "mountain_car": ("MountainCarContinuous-v0", ("closed", "open")),
+    "pendulum": "Pendulum-v1",
+    "mountain_car": "MountainCarContinuous-v0",
 }
 
 
@@ -19,4 +19,4 @@ class ClassicControl(GymControl):
     def __init__(self, name: str, mode: Mode = "closed", **kwargs):
         if name not in ENVS:
             raise ValueError(f"unknown classic control task {name!r}, pick from {list(ENVS)}")
-        super().__init__(ENVS[name][0], mode, **kwargs)
+        super().__init__(ENVS[name], mode, **kwargs)
