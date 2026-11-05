@@ -113,7 +113,7 @@ def test_l2_inner_matches_quadrature_on_unit_box():
     n = 400
     t = (jnp.arange(n) + 0.5) / n
     grid = jnp.stack(jnp.meshgrid(t, t, indexing="ij"), -1).reshape(-1, 2)
-    quadrature = jnp.mean(f1(grid) * f2(grid), axis=0)
+    quadrature = jnp.mean(f1.latent(grid) * f2.latent(grid), axis=0)
     assert rkhs.l2_inner(f1, f2) == pytest.approx(quadrature, rel=1e-3, abs=1e-5)
 
 
@@ -125,13 +125,35 @@ def test_l2_distance_is_a_metric_on_samples():
     assert bool((rkhs.l2_distance(f1, f2) > 0.0).all())
 
 
-def test_squashed_none_is_identity_and_tanh_stays_in_range():
+
+def test_call_is_tanh_of_latent():
     f = random_mixture(jax.random.key(0))
     f = f._replace(a=5.0 * f.a)  # large amplitudes leave [-1, 1]
     t = jax.random.uniform(jax.random.key(1), (7, 3))
-    assert rkhs.squashed(f, "none") is f
-    h = jax.vmap(rkhs.squashed(f, "tanh"))(t)
-    assert h == pytest.approx(jnp.tanh(jax.vmap(f)(t)), abs=1e-6)
-    assert jnp.all(jnp.abs(h) < 1.0)
-    with pytest.raises(ValueError):
-        rkhs.squashed(f, "clip")
+    assert f(t) == pytest.approx(jnp.tanh(f.latent(t)), abs=1e-6)
+    assert bool(jnp.all(jnp.abs(f(t)) <= 1.0))
+
+
+def test_gauss_inner_matches_quadrature_and_box_limit():
+    f1 = random_mixture(jax.random.key(0), k=1, m=3, d=1, l_min=0.01)
+    f2 = random_mixture(jax.random.key(1), k=1, m=3, d=1, l_min=0.01)
+    t = jnp.linspace(0.0, 1.0, 20001)[:, None]
+    w = jnp.exp(-0.5 * (t[:, 0] - 0.5) ** 2 / 0.25**2)
+    prod = f1.latent(t)[:, 0] * f2.latent(t)[:, 0]
+    exact = jnp.trapezoid(w * prod, t[:, 0])
+    assert rkhs.l2_inner(f1, f2, sigma=0.25)[0] == pytest.approx(exact, rel=1e-3)
+    wide = rkhs.l2_inner(f1, f2, sigma=1e4)
+    assert wide == pytest.approx(rkhs.l2_inner(f1, f2), rel=1e-4)
+
+
+def test_quad_distance_ignores_differences_in_saturation():
+    """Atoms that only push further into saturation barely move tanh(f)."""
+    l = jnp.full((1, 1, 1), 0.05)
+    x = jnp.full((1, 1, 1), 0.5)
+    f1 = rkhs.RBFMixture(l, x, jnp.full((1, 1), 20.0))
+    f2 = f1._replace(a=jnp.full((1, 1), 40.0))
+    f3 = f1._replace(a=jnp.full((1, 1), -20.0))
+    near = rkhs.quad_distance(f1, f2)[0]
+    far = rkhs.quad_distance(f1, f3)[0]
+    assert near < 0.1 * far
+    assert rkhs.quad_distance(f1, f1)[0] == 0.0

@@ -6,7 +6,7 @@ Gymnasium's own; only the policy parameterization differs:
 - open loop:   f(t) -> action, with t the normalized time in [0, 1]  (d = 1)
 - closed loop: f(s) -> action, with s the observation mapped to [0, 1]^d
 
-f outputs normalized actions in [-1, 1] (clipped), rescaled to the action space.
+f outputs normalized actions in (-1, 1), rescaled to the action space.
 """
 
 from typing import Callable, Literal
@@ -76,7 +76,7 @@ class GymControl:
         return jnp.where(self.bounded, linear.clip(0.0, 1.0), squashed)
 
     def scale_action(self, action: Float[Array, "k"]) -> np.ndarray:
-        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        action = np.asarray(action, dtype=np.float64)
         span = self.action_high - self.action_low
         return self.action_low + (action + 1.0) * 0.5 * span
 

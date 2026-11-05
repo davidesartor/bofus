@@ -54,7 +54,7 @@ def loglikelihood(
     return -0.5 * (n * jnp.log(nu) + logdetK)
 
 
-Distance = Literal["rkhs", "l2"]
+Distance = Literal["rkhs", "l2", "gauss", "quad"]
 
 
 @eqx.filter_jit
@@ -67,8 +67,10 @@ def pairwise_distance(
 ) -> Float[Array, "n1 n2"]:
     """Distance matrix between two sets of functions, per output weighted by rho.
 
-    "rkhs" measures in the ambient rkhs of lengthscale l0, "l2" in L2 over the
-    unit box (l0 is then unused).
+    "rkhs" measures the latent mixtures in the ambient rkhs of lengthscale l0,
+    "l2" in L2 over the unit box, "gauss" in L2 under a Gaussian weight centered
+    in the box, and "quad" compares the squashed tanh(f) the target sees over
+    quadrature points. Only "rkhs" uses l0.
     """
     should_fill_diag = f2 is None
     f2 = f1 if f2 is None else f2
@@ -80,6 +82,10 @@ def pairwise_distance(
         per_output = rkhs.rbf_distance(l0, f1, f2)
     elif distance == "l2":
         per_output = rkhs.l2_distance(f1, f2)
+    elif distance == "gauss":
+        per_output = rkhs.gauss_distance(f1, f2)
+    elif distance == "quad":
+        per_output = rkhs.quad_distance(f1, f2)
     else:
         raise ValueError(f"unknown distance {distance!r}")
     d2 = jnp.sum(rho * per_output**2, axis=-1)
@@ -150,9 +156,9 @@ class GaussianProcess(NamedTuple):
         # rho0 absorbs the ambient-norm prefactor at the typical observed lengthscale
         log_l = jnp.where(observed, jnp.log(f.l), 0.0)
         lbar = jnp.exp(log_l.sum(axis=(0, 2)) / (m * observed.sum()))
-        # the l2 distance has no ambient lengthscale, so l0 is inert and needs no prefactor
+        # only the rkhs distance has an ambient lengthscale, else l0 is inert
         rho_prefactor = lambda l0: jnp.prod(jnp.sqrt(l0 * (2 * lbar - l0)) / lbar, -1)
-        if distance == "l2":
+        if distance != "rkhs":
             rho_prefactor = lambda l0: jnp.ones(k)
 
         # L-BFGS-B over the log-space box

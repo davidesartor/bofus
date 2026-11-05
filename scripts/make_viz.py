@@ -33,9 +33,10 @@ LABELS = dict(
 
 
 def mixture_curves(l, x, a, tn):
-    """Evaluate each candidate mixture on the normalized grid."""
+    """Evaluate each candidate's squashed mixture tanh(f) on the normalized grid."""
     d2 = jnp.sum(jnp.square(tn[:, None, None, None, None] - x) / l, axis=-1)
-    return jnp.sum(a * jnp.exp(-0.5 * d2), axis=-1).squeeze(-1).T  # (n, grid)
+    f = jnp.sum(a * jnp.exp(-0.5 * d2), axis=-1).squeeze(-1).T  # (n, grid)
+    return jnp.tanh(f)
 
 
 def gramacylee_data(l, x, a, grid_points):

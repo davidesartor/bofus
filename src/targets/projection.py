@@ -13,7 +13,7 @@ from targets import evaluate_on
 class Projection:
     """L2 distance between f and a rescaled profile on the unit box, via quadrature.
 
-    The profile is min-max rescaled to [-1, 1], the nominal output range of f.
+    The profile is min-max rescaled to [-1, 1], the closure of the range of f.
     With n_points=None uses a midpoint tensor grid, otherwise a Monte Carlo sample.
     RBF mixtures are dense in L2, so the infimum of the objective is 0.
     """

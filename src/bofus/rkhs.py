@@ -1,6 +1,8 @@
-from typing import Callable, Literal, NamedTuple, Self
+import functools
+from typing import NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
+import numpy as np
 import jax.numpy as jnp
 from jax.scipy.special import erf
 import equinox as eqx
@@ -8,17 +10,27 @@ from . import kernels, utils
 
 
 class RBFMixture(NamedTuple):
+    """Function h = tanh(f) of an RBF mixture f = sum_i a_i exp(-|x - x_i|^2 / 2 l_i).
+
+    The mixture f is the latent element of the rkhs that the GP compares and the
+    acquisition optimizes, the target only ever sees the squashed h in (-1, 1).
+    """
+
     l: Float[Array, "... m d"]
     x: Float[Array, "... m d"]
     a: Float[Array, "... m"]
 
     @eqx.filter_jit
-    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
-        """Evaluate the function at points x."""
+    def latent(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
+        """Evaluate the unsquashed mixture f at points x."""
         x = x[..., *(None,) * self.a.ndim, :]
         d = kernels.euclidean_distance(self.l, x, self.x)
-        y = jnp.sum(self.a * kernels.rbf(d), axis=-1)
-        return y
+        return jnp.sum(self.a * kernels.rbf(d), axis=-1)
+
+    @eqx.filter_jit
+    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
+        """Evaluate the squashed function h = tanh(f) at points x."""
+        return jnp.tanh(self.latent(x))
 
     @staticmethod
     @eqx.filter_jit
@@ -54,22 +66,6 @@ class RBFMixture(NamedTuple):
         return self._replace(l=l, x=x, a=a)
 
 
-Squash = Literal["none", "tanh"]
-
-
-def squashed(f: RBFMixture, squash: Squash) -> Callable[[Float[Array, "d"]], Float[Array, "k"]]:
-    """The function the target sees, h = squash(f), with the GP still modelling f.
-
-    "none" hands f over as is (targets clip to their nominal [-1, 1] range), "tanh"
-    maps it smoothly into (-1, 1) so every candidate is feasible.
-    """
-    if squash == "none":
-        return f
-    if squash == "tanh":
-        return lambda x: jnp.tanh(f(x))
-    raise ValueError(f"unknown squash {squash!r}, pick from {Squash.__args__}")
-
-
 @eqx.filter_jit
 def rbf_inner(
     l0: Float[Array, "... d"],
@@ -95,13 +91,26 @@ def rbf_inner(
     return jnp.where(valid, k, jnp.inf)
 
 
+# width of the gaussian measure: a standard normal observation squashed by a sigmoid,
+# as the closed loop control targets do, has a std of about 0.21 around 0.5
+GAUSS_CENTER, GAUSS_SIGMA = 0.5, 0.25
+
+
 @eqx.filter_jit
-def l2_inner(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+def l2_inner(
+    f1: RBFMixture,
+    f2: RBFMixture,
+    sigma: float | None = None,
+    center: float = GAUSS_CENTER,
+) -> Float[Array, "..."]:
     """L2 inner product of RBF mixtures over the unit box [0, 1]^d, in closed form.
 
     Per dimension, the product of two Gaussian atoms is a Gaussian in t of
     variance s = l1 l2 / (l1 + l2) centered at mu = (x1 l2 + x2 l1) / (l1 + l2),
     times exp(-(x1 - x2)^2 / (2 (l1 + l2))), so it integrates to erf terms.
+
+    With sigma, the box is weighted by exp(-(t - center)^2 / (2 sigma^2)): one more
+    Gaussian factor, so still erf terms, and sigma -> inf recovers the plain box.
     """
     # broadcast to common shape (..., m1, m2, d)
     l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
@@ -110,10 +119,23 @@ def l2_inner(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
     ls = l1 + l2
     s = l1 * l2 / ls
     mu = (x1 * l2 + x2 * l1) / ls
+    scale = jnp.exp(-0.5 * (x1 - x2) ** 2 / ls)
+    if sigma is not None:
+        v = sigma**2
+        scale = scale * jnp.exp(-0.5 * (mu - center) ** 2 / (s + v))
+        s, mu = s * v / (s + v), (mu * v + center * s) / (s + v)
     w = jnp.sqrt(2.0 * s)
     box = 0.5 * jnp.sqrt(jnp.pi) * w * (erf((1.0 - mu) / w) + erf(mu / w))
-    K = jnp.prod(jnp.exp(-0.5 * (x1 - x2) ** 2 / ls) * box, axis=-1)
+    K = jnp.prod(scale * box, axis=-1)
     return jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
+
+
+@functools.cache
+def quadrature_points(d: int, n: int = 256, seed: int = 0) -> np.ndarray:
+    """Fixed latin hypercube points on the unit box, a constant under jit."""
+    rng = np.random.default_rng(seed)
+    perm = np.stack([rng.permutation(n) for _ in range(d)], axis=-1)
+    return ((perm + rng.uniform(size=(n, d))) / n).astype(np.float32)
 
 
 def _distance(inner, f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
@@ -137,5 +159,24 @@ def rbf_distance(
 
 @eqx.filter_jit
 def l2_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
-    """L2 distance between RBF mixtures over the unit box [0, 1]^d."""
+    """L2 distance between the latent mixtures over the unit box [0, 1]^d."""
     return _distance(l2_inner, f1, f2)
+
+
+@eqx.filter_jit
+def gauss_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+    """L2 distance between the latent mixtures, Gaussian weighted around the box center."""
+    return _distance(lambda u, v: l2_inner(u, v, sigma=GAUSS_SIGMA), f1, f2)
+
+
+@eqx.filter_jit
+def quad_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+    """RMS distance between the squashed functions tanh(f) over quadrature points.
+
+    Unlike the closed-form distances it sees what the target sees, so functions that
+    differ only where tanh saturates are close.
+    """
+    z = jnp.asarray(quadrature_points(f1.x.shape[-1]))
+    d2 = jnp.mean(jnp.square(f1(z) - f2(z)), axis=0)
+    d = jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0))
+    return jnp.where(d2 > 0.0, d, 0.0)

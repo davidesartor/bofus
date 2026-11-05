@@ -1,3 +1,4 @@
+import pytest
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -134,13 +135,14 @@ def test_fitted_rho_downweights_uninformative_output():
     assert float(fitted.rho[0]) > 2.0 * float(fitted.rho[1])
 
 
-def test_l2_distance_fit_interpolates_and_downweights_noise_output():
+@pytest.mark.parametrize("distance", ["l2", "gauss", "quad"])
+def test_box_distance_fit_interpolates_and_downweights_noise_output(distance):
     fs, ys = make_functions(8, seed=1)
-    fitted = fit(fs, ys, nugget_range=(1e-6, 1e-4), distance="l2")
+    fitted = fit(fs, ys, nugget_range=(1e-6, 1e-4), distance=distance)
     mean, _ = fitted.predict(fs)
     np.testing.assert_allclose(mean, ys, atol=1e-2)
 
     fs, _ = make_functions(24, m=3, d=1, k=2, seed=5)
     ys = fs(jnp.full(1, 0.5))[:, 0]
-    fitted = fit(fs, ys, distance="l2")
+    fitted = fit(fs, ys, distance=distance)
     assert float(fitted.rho[0]) > 2.0 * float(fitted.rho[1])

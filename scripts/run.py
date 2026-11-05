@@ -50,18 +50,16 @@ def run(
     batch_size: int = 1,
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
-    a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
+    a_range: tuple[Scalar, Scalar] = (jnp.asarray(-3.0), jnp.asarray(3.0)),
     fixed_l: float | None = None,
     distance: gp.Distance = "rkhs",
-    squash: rkhs.Squash = "none",
     save_path: str | None = None,
     verbose: bool = False,
 ) -> dict:
     """Sequential EI loop doubling the basis size, each stage doubling the observations.
 
     fixed_l shares one squared lengthscale across all atoms instead of adapting it.
-    squash maps f into the nominal output range before the target sees it, the GP
-    and the acquisition still work on f itself.
+    The target sees tanh of each mixture, a_range wide enough to saturate it.
     """
     key = jr.key(seed)
     if fixed_l is not None:
@@ -74,9 +72,8 @@ def run(
     fs = rkhs.RBFMixture.from_lhs(
         key_init, (initial_acquisitions, k, schedule[0], d), l_range, x_range, a_range
     )
-    evaluate = lambda f: target_fn(rkhs.squashed(f, squash))
     ys = [
-        evaluate(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
+        target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
     ]
     ys = jnp.asarray(ys)
 
@@ -109,7 +106,7 @@ def run(
             # Evaluate and store each candidate, truncating the batch at the budget
             for j in range(min(batch_size, stage_end - i)):
                 f = jax.tree.map(lambda z: z[j], f_batch)
-                y = evaluate(f)
+                y = target_fn(f)
                 fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
                 ys = ys.at[i].set(y)
 
@@ -131,7 +128,6 @@ def run(
                 a=fs.a[:i],
                 y=ys[:i],
                 optimum=optimum,
-                squash=squash,
             )
 
     total_acquisitions = i
@@ -189,21 +185,21 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--distance",
-        choices=["rkhs", "l2"],
+        choices=["rkhs", "l2", "gauss", "quad"],
         default="rkhs",
         help="distance between functions in the GP kernel",
     )
     parser.add_argument(
-        "--squash",
-        choices=["none", "tanh"],
-        default="none",
-        help="output map applied to f before the target (none: the target clips)",
-    )
-    parser.add_argument(
         "--a_max",
         type=float,
-        default=1.0,
-        help="amplitude box [-a_max, a_max]; tanh needs a_max > 1 to reach saturation",
+        default=3.0,
+        help="amplitude box [-a_max, a_max], wide enough for tanh to saturate",
+    )
+    parser.add_argument(
+        "--x_pad",
+        type=float,
+        default=0.0,
+        help="let atom centers sit this far outside the unit box, for edge ramps",
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
@@ -214,8 +210,8 @@ if __name__ == "__main__":
 
     method = "ours_adaptive" if args.fixed_l is None else f"ours_fixed_l{args.fixed_l:g}"
     method += "" if args.distance == "rkhs" else f"_{args.distance}"
-    method += "" if args.squash == "none" else f"_{args.squash}"
-    method += "" if args.a_max == 1.0 else f"_amax{args.a_max:g}"
+    method += "" if args.a_max == 3.0 else f"_amax{args.a_max:g}"
+    method += "" if args.x_pad == 0.0 else f"_xpad{args.x_pad:g}"
     save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
@@ -229,8 +225,8 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         fixed_l=args.fixed_l,
         a_range=(jnp.asarray(-args.a_max), jnp.asarray(args.a_max)),
+        x_range=(jnp.asarray(-args.x_pad), jnp.asarray(1.0 + args.x_pad)),
         distance=args.distance,
-        squash=args.squash,
         save_path=save_path,
         verbose=args.verbose,
     )
