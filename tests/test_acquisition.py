@@ -72,17 +72,16 @@ from bofus import gp, kernels, rkhs
 from bofus.acquisition import optimize_expected_improvement
 
 L_RANGE = (jnp.array(0.05**2), jnp.array(0.4**2))
-X_RANGE = (jnp.array(0.0), jnp.array(1.0))
 Y_RANGE = (jnp.array(-1.0), jnp.array(1.0))
 
 
-def sample_functions(key, shape):
-    return rkhs.RBFMixture.from_lhs(key, shape, L_RANGE, X_RANGE, Y_RANGE)
+def sample_functions(key, shape, space=rkhs.Space()):
+    return rkhs.RBFMixture.from_lhs(key, shape, L_RANGE, Y_RANGE, space)
 
 
-def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
+def make_surrogate(n=8, k=2, m=3, d=2, seed=0, space=rkhs.Space()):
     key = jax.random.key(seed)
-    fs = sample_functions(key, (n, k, m, d))
+    fs = sample_functions(key, (n, k, m, d), space)
     ys = jax.random.normal(key, (n,))
     return fs, ys, gp.GaussianProcess.fit(fs, ys, profile=kernels.matern52)
 
@@ -90,7 +89,7 @@ def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
 def test_optimize_returns_valid_candidate():
     _, ys, surrogate = make_surrogate()
     best = optimize_expected_improvement(
-        jax.random.key(3), surrogate, L_RANGE, X_RANGE, Y_RANGE
+        jax.random.key(3), surrogate, L_RANGE, Y_RANGE
     )
 
     def neg_log_ei(f):
@@ -104,8 +103,9 @@ def test_optimize_returns_valid_candidate():
 
     # the refined candidate must stay inside the box constraints
     assert bool((best.l <= L_RANGE[1] + 1e-8).all())
-    assert bool((best.x >= X_RANGE[0] - 1e-8).all())
-    assert bool((best.x <= X_RANGE[1] + 1e-8).all())
+    reach = rkhs.MAX_OVERHANG * jnp.sqrt(best.l)
+    assert bool((best.x >= -reach - 1e-6).all())
+    assert bool((best.x <= 1.0 + reach + 1e-6).all())
 
 
 def test_optimize_clips_l_floor_to_the_ambient():
@@ -117,7 +117,7 @@ def test_optimize_clips_l_floor_to_the_ambient():
     ys = jax.random.normal(key, (8,))
     surrogate = gp.GaussianProcess.fit(fs, ys, profile=kernels.matern52)
 
-    best = optimize_expected_improvement(key, surrogate, wide, X_RANGE, Y_RANGE)
+    best = optimize_expected_improvement(key, surrogate, wide, Y_RANGE)
     l_floor = float(
         jnp.maximum(
             surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2
@@ -126,3 +126,15 @@ def test_optimize_clips_l_floor_to_the_ambient():
     )
     assert bool((best.l >= max(float(wide[0]), l_floor) - 1e-8).all())
     assert bool(jnp.isfinite(best.a).all())
+
+
+@pytest.mark.parametrize("distance", ["rkhs", "l2", "gauss", "quad"])
+def test_optimize_with_mixed_constraints(distance):
+    space = rkhs.Space(inputs=("periodic", "box"), outputs=("tanh", "linear"))
+    fs = sample_functions(jax.random.key(0), (8, 2, 3, 2), space)
+    ys = jax.random.normal(jax.random.key(1), (8,))
+    surrogate = gp.GaussianProcess.fit(fs, ys, profile=kernels.matern52, distance=distance)
+    best = optimize_expected_improvement(jax.random.key(2), surrogate, L_RANGE, Y_RANGE)
+    assert best.space == space
+    assert bool(jnp.isfinite(surrogate.predict(best)[0]).all())
+    assert bool(((best.x[..., 0] >= 0.0) & (best.x[..., 0] <= 1.0)).all())

@@ -1,3 +1,4 @@
+import numpy as np
 import jax
 import jax.numpy as jnp
 import pytest
@@ -157,3 +158,62 @@ def test_quad_distance_ignores_differences_in_saturation():
     far = rkhs.quad_distance(f1, f3)[0]
     assert near < 0.1 * far
     assert rkhs.quad_distance(f1, f1)[0] == 0.0
+
+
+MIXED = rkhs.Space(inputs=("periodic", "box"), outputs=("tanh", "linear"))
+
+
+def test_space_rejects_unknown_types_and_wrong_dimensions():
+    with pytest.raises(ValueError, match="unknown"):
+        rkhs.Space(inputs=("circle",))
+    with pytest.raises(ValueError, match="declares"):
+        MIXED.periodic(3)
+
+
+def test_periodic_inputs_wrap_and_outputs_squash_per_dimension():
+    f = random_mixture(jax.random.key(0), k=2, m=4, d=2, l_min=0.05)
+    f = f._replace(a=5.0 * f.a, space=MIXED)
+    t = jax.random.uniform(jax.random.key(1), (7, 2))
+    shifted = t.at[:, 0].add(1.0)
+    assert f(shifted) == pytest.approx(f(t), abs=1e-5)
+    h, latent = f(t), f.latent(t)
+    assert h[:, 0] == pytest.approx(jnp.tanh(latent[:, 0]), abs=1e-6)
+    assert h[:, 1] == pytest.approx(latent[:, 1], abs=1e-6)
+
+    # a wrapped atom is the sum of its images on the real line
+    ns = jnp.arange(-30, 31)
+    images = jnp.exp(-0.5 * (t[:, None, 0] + ns - f.x[0, 0, 0]) ** 2 / f.l[0, 0, 0])
+    box = jnp.exp(-0.5 * (t[:, 1] - f.x[0, 0, 1]) ** 2 / f.l[0, 0, 1])
+    atom = f._replace(a=jnp.zeros_like(f.a).at[0, 0].set(1.0))
+    assert atom.latent(t)[:, 0] == pytest.approx(images.sum(-1) * box, rel=1e-5)
+
+
+def test_periodic_rkhs_inner_reproduces_point_evaluation():
+    """An atom of the ambient lengthscale is the kernel section: <k(., c), f> = f(c)."""
+    l0 = jnp.array([[0.05, 0.08]])
+    f = random_mixture(jax.random.key(2), k=1, m=3, d=2, l_min=0.1)._replace(space=MIXED)
+    c = jnp.array([0.3, 0.6])
+    section = rkhs.RBFMixture(l0[:, None, :], c[None, None, :], jnp.ones((1, 1)), MIXED)
+    assert rkhs.rbf_inner(l0, section, f)[0] == pytest.approx(f.latent(c)[0], rel=1e-5)
+
+
+@pytest.mark.parametrize("sigma", [None, 0.25])
+def test_mixed_l2_inner_matches_quadrature(sigma):
+    f1 = random_mixture(jax.random.key(3), k=1, m=4, d=2, l_min=0.01)._replace(space=MIXED)
+    f2 = random_mixture(jax.random.key(4), k=1, m=3, d=2, l_min=0.01)._replace(space=MIXED)
+    n = 400
+    t = (jnp.arange(n) + 0.5) / n
+    grid = jnp.stack(jnp.meshgrid(t, t, indexing="ij"), -1).reshape(-1, 2)
+    w = 1.0 if sigma is None else jnp.exp(-0.5 * (grid[:, 1] - 0.5) ** 2 / sigma**2)
+    quadrature = jnp.mean(w * f1.latent(grid)[:, 0] * f2.latent(grid)[:, 0])
+    inner = rkhs.l2_inner(f1, f2, sigma=sigma)[0]
+    assert inner == pytest.approx(quadrature, rel=1e-3, abs=1e-5)
+
+
+def test_centers_round_trip_through_unit_coordinates():
+    l = jnp.array([[0.04, 0.25]])
+    u = jnp.array([[0.0, 1.0]])
+    x = rkhs.centers_from_unit(u, l, MIXED)
+    np.testing.assert_allclose(x, [[0.0, 1.0 + 3 * 0.5]], atol=1e-6)
+    u = jnp.array([[0.3, 0.7]])
+    np.testing.assert_allclose(rkhs.centers_to_unit(rkhs.centers_from_unit(u, l, MIXED), l, MIXED), u, atol=1e-6)

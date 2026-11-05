@@ -35,7 +35,7 @@ def expand_to(fs: rkhs.RBFMixture, ys: Float[Array, "o"], size: int):
         o, *rest = x.shape
         return jnp.full((size, *rest), fill).at[:o].set(x)
 
-    fills = rkhs.RBFMixture(l=1.0, x=0.0, a=0.0)
+    fills = rkhs.RBFMixture(l=1.0, x=0.0, a=0.0, space=fs.space)
     fs = jax.tree.map(expand, fs, fills)
     ys = expand(ys, jnp.nan)
     return fs, ys
@@ -49,7 +49,6 @@ def run(
     initial_acquisitions: int,
     batch_size: int = 1,
     l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.01), jnp.asarray(1.0)),
-    x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-3.0), jnp.asarray(3.0)),
     fixed_l: float | None = None,
     distance: gp.Distance = "rkhs",
@@ -59,18 +58,23 @@ def run(
     """Sequential EI loop doubling the basis size, each stage doubling the observations.
 
     fixed_l shares one squared lengthscale across all atoms instead of adapting it.
-    The target sees tanh of each mixture, a_range wide enough to saturate it.
+    The constraint type of each input and output comes from the target (see
+    targets.TestFunction), the default a_range is wide enough to saturate tanh.
     """
     key = jr.key(seed)
     if fixed_l is not None:
         l_range = (jnp.asarray(fixed_l), jnp.asarray(fixed_l))
     d, k = target_fn.d, target_fn.k
+    space = rkhs.Space(
+        inputs=tuple(getattr(target_fn, "inputs", ())),
+        outputs=tuple(getattr(target_fn, "outputs", ())),
+    )
     schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
 
     # initialize the observation buffers with the evaluated latin hypercube sample
     key, key_init = jr.split(key)
     fs = rkhs.RBFMixture.from_lhs(
-        key_init, (initial_acquisitions, k, schedule[0], d), l_range, x_range, a_range
+        key_init, (initial_acquisitions, k, schedule[0], d), l_range, a_range, space
     )
     ys = [
         target_fn(jax.tree.map(lambda z: z[i], fs)) for i in range(initial_acquisitions)
@@ -97,7 +101,6 @@ def run(
                 key_acq,
                 surrogate,
                 l_range,
-                x_range,
                 a_range,
                 batch_size=batch_size,
                 fixed_l=fixed_l,
@@ -156,7 +159,7 @@ if __name__ == "__main__":
                 (ClassicControl, classic_control.ENVS),
                 (Mujoco, mujoco.ENVS),
             ]
-            for name, (_, modes) in envs.items()
+            for name, (_, modes, _) in envs.items()
             for mode in modes
         },
     )
@@ -195,12 +198,6 @@ if __name__ == "__main__":
         default=3.0,
         help="amplitude box [-a_max, a_max], wide enough for tanh to saturate",
     )
-    parser.add_argument(
-        "--x_pad",
-        type=float,
-        default=0.0,
-        help="let atom centers sit this far outside the unit box, for edge ramps",
-    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
@@ -211,7 +208,6 @@ if __name__ == "__main__":
     method = "ours_adaptive" if args.fixed_l is None else f"ours_fixed_l{args.fixed_l:g}"
     method += "" if args.distance == "rkhs" else f"_{args.distance}"
     method += "" if args.a_max == 3.0 else f"_amax{args.a_max:g}"
-    method += "" if args.x_pad == 0.0 else f"_xpad{args.x_pad:g}"
     save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
@@ -225,7 +221,6 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         fixed_l=args.fixed_l,
         a_range=(jnp.asarray(-args.a_max), jnp.asarray(args.a_max)),
-        x_range=(jnp.asarray(-args.x_pad), jnp.asarray(1.0 + args.x_pad)),
         distance=args.distance,
         save_path=save_path,
         verbose=args.verbose,

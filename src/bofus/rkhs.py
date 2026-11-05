@@ -1,36 +1,130 @@
+import dataclasses
 import functools
-from typing import NamedTuple, Self
+from typing import Callable, Literal, NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 from jax.scipy.special import erf
 import equinox as eqx
-from . import kernels, utils
+from . import utils
+
+InputType = Literal["box", "periodic"]
+OutputType = Literal["tanh", "linear"]
+
+# atoms of a box input may stick out of [0, 1] by this many of their own sigma
+MAX_OVERHANG = 3.0
+
+# periodic atoms are wrapped by summing this many images on each side of the nearest
+# one: with squared lengthscales up to 2 (pair products) the first neglected image
+# weighs exp(-6.5^2 / 4) ~ 1e-5
+IMAGES = 6
+
+
+@jax.tree_util.register_static
+@dataclasses.dataclass(frozen=True)
+class Space:
+    """Per dimension constraints of f: [0, 1]^d -> R^k, static under jit and tree maps.
+
+    inputs: "box" lives on [0, 1] (atoms may overhang by MAX_OVERHANG sigma, the
+    function only matters inside), "periodic" on the circle [0, 1) with wrapped atoms.
+    outputs: "tanh" squashes into (-1, 1), "linear" leaves the mixture as is.
+    An empty tuple means every dimension takes the first option.
+    """
+
+    inputs: tuple[InputType, ...] = ()
+    outputs: tuple[OutputType, ...] = ()
+
+    def __post_init__(self):
+        for kind, allowed in [(self.inputs, InputType), (self.outputs, OutputType)]:
+            if bad := set(kind) - set(allowed.__args__):
+                raise ValueError(f"unknown constraint types {bad}, pick from {allowed.__args__}")
+
+    @staticmethod
+    def _mask(types: tuple[str, ...], n: int, value: str) -> np.ndarray:
+        if types and len(types) != n:
+            raise ValueError(f"space declares {len(types)} dimensions, the mixture has {n}")
+        return np.array([t == value for t in types] if types else [False] * n)
+
+    def periodic(self, d: int) -> np.ndarray:
+        return self._mask(self.inputs, d, "periodic")
+
+    def linear(self, k: int) -> np.ndarray:
+        return self._mask(self.outputs, k, "linear")
+
+
+def dim_product(
+    box_fn: Callable[..., Array],
+    line_fn: Callable[..., Array],
+    periodic: np.ndarray,
+    delta: Float[Array, "... d"],
+    *params: Float[Array, "... d"],
+) -> Float[Array, "..."]:
+    """Product over dimensions of per dimension factors, wrapping the periodic ones.
+
+    Box dimensions take box_fn(delta, *params). Periodic dimensions sum line_fn, the
+    factor on the real line, over the images delta + n of the nearest offset.
+    """
+    shape = jnp.broadcast_shapes(delta.shape, *(p.shape for p in params))
+    take = lambda z, i: jnp.broadcast_to(z, shape)[..., i]
+    box, per = np.flatnonzero(~periodic), np.flatnonzero(periodic)
+    out = jnp.prod(box_fn(take(delta, box), *(take(p, box) for p in params)), axis=-1)
+    if len(per):
+        dp = take(delta, per)
+        dp = dp - jnp.round(dp)
+        shifts = jnp.arange(-IMAGES, IMAGES + 1, dtype=dp.dtype)[:, None]
+        expand = lambda z: take(z, per)[..., None, :]
+        images = line_fn(dp[..., None, :] + shifts, *(expand(p) for p in params))
+        out = out * jnp.prod(images.sum(axis=-2), axis=-1)
+    return out
+
+
+def gaussian(delta: Array, l: Array, *_) -> Array:
+    return jnp.exp(-0.5 * delta**2 / l)
+
+
+def centers_from_unit(u: Float[Array, "... d"], l: Float[Array, "... d"], space: Space):
+    """Atom centers from unit coordinates: box atoms reach MAX_OVERHANG sigma outside."""
+    reach = MAX_OVERHANG * jnp.sqrt(l)
+    box = -reach + u * (1.0 + 2.0 * reach)
+    return jnp.where(space.periodic(u.shape[-1]), u, box)
+
+
+def centers_to_unit(x: Float[Array, "... d"], l: Float[Array, "... d"], space: Space):
+    """Inverse of centers_from_unit, periodic centers taken modulo 1."""
+    reach = MAX_OVERHANG * jnp.sqrt(l)
+    box = (x + reach) / (1.0 + 2.0 * reach)
+    return jnp.where(space.periodic(x.shape[-1]), x % 1.0, box)
 
 
 class RBFMixture(NamedTuple):
-    """Function h = tanh(f) of an RBF mixture f = sum_i a_i exp(-|x - x_i|^2 / 2 l_i).
+    """Function h = squash(f) of an RBF mixture f = sum_i a_i prod_j phi(x_j - x_ij; l_ij).
 
-    The mixture f is the latent element of the rkhs that the GP compares and the
-    acquisition optimizes, the target only ever sees the squashed h in (-1, 1).
+    phi is a Gaussian on box inputs and a Gaussian wrapped around the circle on
+    periodic ones, squash is tanh on bounded outputs and the identity on linear ones,
+    as declared by space. The mixture f is the latent element of the rkhs that the GP
+    compares and the acquisition optimizes, the target only ever sees h.
     """
 
     l: Float[Array, "... m d"]
     x: Float[Array, "... m d"]
     a: Float[Array, "... m"]
+    space: Space = Space()
 
     @eqx.filter_jit
     def latent(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
         """Evaluate the unsquashed mixture f at points x."""
         x = x[..., *(None,) * self.a.ndim, :]
-        d = kernels.euclidean_distance(self.l, x, self.x)
-        return jnp.sum(self.a * kernels.rbf(d), axis=-1)
+        periodic = self.space.periodic(self.x.shape[-1])
+        phi = dim_product(gaussian, gaussian, periodic, x - self.x, self.l)
+        return jnp.sum(self.a * phi, axis=-1)
 
     @eqx.filter_jit
     def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
-        """Evaluate the squashed function h = tanh(f) at points x."""
-        return jnp.tanh(self.latent(x))
+        """Evaluate the squashed function h at points x, outputs on the last axis."""
+        f = self.latent(x)
+        return jnp.where(self.space.linear(self.a.shape[-2]), f, jnp.tanh(f))
 
     @staticmethod
     @eqx.filter_jit
@@ -38,17 +132,17 @@ class RBFMixture(NamedTuple):
         key,
         shape: tuple[int, ...],
         l_range: tuple[Scalar, Scalar],
-        x_range: tuple[Scalar, Scalar],
         a_range: tuple[Scalar, Scalar],
+        space: Space = Space(),
     ) -> "RBFMixture":
         """Latin-hypercube mixtures with log-uniform squared lengthscales."""
         *batch, m, d = shape
         p = utils.latin_hypercube_sample(key, (*batch, m, 2 * d + 1))
-        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
-        log_l = utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1]))
-        x = utils.rescale(x, *x_range)
+        log_l, u, a = jnp.split(p, [d, 2 * d], axis=-1)
+        l = jnp.exp(utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1])))
+        x = centers_from_unit(u, l, space)
         a = utils.rescale(a, *a_range)
-        return RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
+        return RBFMixture(l=l, x=x, a=a.squeeze(-1), space=space)
 
     def pad_to(self, m: int) -> Self:
         """Pad the mixture to a larger number of basis points."""
@@ -66,27 +160,36 @@ class RBFMixture(NamedTuple):
         return self._replace(l=l, x=x, a=a)
 
 
+def _pairs(f1: RBFMixture, f2: RBFMixture):
+    """Atom parameters broadcast to the common shape (..., m1, m2, d)."""
+    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
+    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+    return l1, x1, l2, x2, f1.space.periodic(f1.x.shape[-1])
+
+
 @eqx.filter_jit
 def rbf_inner(
     l0: Float[Array, "... d"],
     f1: RBFMixture,
     f2: RBFMixture,
 ) -> Float[Array, "..."]:
-    """Inner product of RBF mixtures, seen in a wider RBF rkhs."""
-    # broadcast to common shape (..., m1, m2, d)
-    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
-    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+    """Inner product of RBF mixtures, seen in a wider RBF rkhs.
+
+    On periodic inputs the ambient kernel is wrapped as well, and by Poisson
+    summation the pair factor is the real line one summed over images.
+    """
+    l1, x1, l2, x2, periodic = _pairs(f1, f2)
     l0 = l0[..., None, None, :]
 
     # lengthscale factors, patched where the pair does not fit the ambient rkhs
     ls = l1 + l2 - l0
     valid = jnp.all(ls > 0.0, axis=(-3, -2, -1))
     ls = jnp.where(ls > 0.0, ls, 1.0)
-    lp = l1 * l2 / (l0 * ls)
-    scale = jnp.sqrt(jnp.prod(lp, axis=-1))
+    scale = jnp.sqrt(l1 * l2 / (l0 * ls))
 
     # inner kernel matrix, infinite if any pair falls outside the ambient rkhs
-    K = scale * kernels.rbf(kernels.euclidean_distance(ls, x1, x2))
+    factor = lambda delta, ls, scale: scale * gaussian(delta, ls)
+    K = dim_product(factor, factor, periodic, x1 - x2, ls, scale)
     k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
     return jnp.where(valid, k, jnp.inf)
 
@@ -105,28 +208,35 @@ def l2_inner(
 ) -> Float[Array, "..."]:
     """L2 inner product of RBF mixtures over the unit box [0, 1]^d, in closed form.
 
-    Per dimension, the product of two Gaussian atoms is a Gaussian in t of
+    Per box dimension, the product of two Gaussian atoms is a Gaussian in t of
     variance s = l1 l2 / (l1 + l2) centered at mu = (x1 l2 + x2 l1) / (l1 + l2),
     times exp(-(x1 - x2)^2 / (2 (l1 + l2))), so it integrates to erf terms.
+    With sigma, box dimensions are weighted by exp(-(t - center)^2 / (2 sigma^2)):
+    one more Gaussian factor, so still erf terms, and sigma -> inf recovers the box.
 
-    With sigma, the box is weighted by exp(-(t - center)^2 / (2 sigma^2)): one more
-    Gaussian factor, so still erf terms, and sigma -> inf recovers the plain box.
+    Per periodic dimension, the integral over the circle of two wrapped atoms is the
+    real line integral sqrt(2 pi s) exp(-(x1 - x2)^2 / (2 (l1 + l2))) over images,
+    unweighted since the circle has no edges.
     """
-    # broadcast to common shape (..., m1, m2, d)
-    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
-    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+    l1, x1, l2, x2, periodic = _pairs(f1, f2)
 
-    ls = l1 + l2
-    s = l1 * l2 / ls
-    mu = (x1 * l2 + x2 * l1) / ls
-    scale = jnp.exp(-0.5 * (x1 - x2) ** 2 / ls)
-    if sigma is not None:
-        v = sigma**2
-        scale = scale * jnp.exp(-0.5 * (mu - center) ** 2 / (s + v))
-        s, mu = s * v / (s + v), (mu * v + center * s) / (s + v)
-    w = jnp.sqrt(2.0 * s)
-    box = 0.5 * jnp.sqrt(jnp.pi) * w * (erf((1.0 - mu) / w) + erf(mu / w))
-    K = jnp.prod(scale * box, axis=-1)
+    def box_fn(delta, l1, x1, l2, x2):
+        ls = l1 + l2
+        s = l1 * l2 / ls
+        mu = (x1 * l2 + x2 * l1) / ls
+        scale = gaussian(delta, ls)
+        if sigma is not None:
+            v = sigma**2
+            scale = scale * gaussian(mu - center, s + v)
+            s, mu = s * v / (s + v), (mu * v + center * s) / (s + v)
+        w = jnp.sqrt(2.0 * s)
+        return scale * 0.5 * jnp.sqrt(jnp.pi) * w * (erf((1.0 - mu) / w) + erf(mu / w))
+
+    def line_fn(delta, l1, x1, l2, x2):
+        ls = l1 + l2
+        return jnp.sqrt(2.0 * jnp.pi * l1 * l2 / ls) * gaussian(delta, ls)
+
+    K = dim_product(box_fn, line_fn, periodic, x1 - x2, l1, x1, l2, x2)
     return jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
 
 
@@ -171,7 +281,7 @@ def gauss_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
 
 @eqx.filter_jit
 def quad_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
-    """RMS distance between the squashed functions tanh(f) over quadrature points.
+    """RMS distance between the squashed functions h over quadrature points.
 
     Unlike the closed-form distances it sees what the target sees, so functions that
     differ only where tanh saturates are close.

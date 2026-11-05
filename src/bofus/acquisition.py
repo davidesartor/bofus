@@ -108,7 +108,6 @@ def optimize_expected_improvement(
     key: Key,
     surrogate: gp.GaussianProcess,
     l_range: tuple[Scalar, Scalar],
-    x_range: tuple[Scalar, Scalar],
     a_range: tuple[Scalar, Scalar],
     batch_size: int = 1,
     multi_starts: int = 32,
@@ -126,10 +125,14 @@ def optimize_expected_improvement(
     sampled from marginal log EI at temperature eta, the incumbent is the best
     posterior mean over the observations.
 
+    Centers are searched in unit coordinates, so the box atoms' overhang of up to
+    MAX_OVERHANG of their own sigma outside [0, 1] stays a box constraint.
+
     With fixed_l every atom shares that squared lengthscale (the non-adaptive
     ablation): l is held constant and only centers and amplitudes are optimized.
     """
     _, k, m, d = surrogate.x.l.shape
+    space = surrogate.x.space
     mask = jnp.isfinite(surrogate.y)
 
     # ambient inner products need l + l_obs - l0 > 0 and 2l - l0 > 0, so clip the lower end
@@ -145,7 +148,12 @@ def optimize_expected_improvement(
     def fix(l: Float[Array, "..."]) -> Float[Array, "..."]:
         return l if fixed_l is None else jnp.full_like(l, fixed_l)
 
-    bounds = tuple(zip(log_l_range, x_range, a_range))
+    unit_range = (jnp.asarray(0.0), jnp.asarray(1.0))
+    bounds = tuple(zip(log_l_range, unit_range, a_range))
+
+    def mixture(log_l, u, a) -> rkhs.RBFMixture:
+        l = fix(jnp.exp(log_l))
+        return rkhs.RBFMixture(l=l, x=rkhs.centers_from_unit(u, l, space), a=a, space=space)
 
     def marginals(f: rkhs.RBFMixture) -> tuple[Float[Array, "n"], Float[Array, "n"]]:
         """Posterior mean and std of each function on its own."""
@@ -158,18 +166,17 @@ def optimize_expected_improvement(
         return jnp.concatenate(
             [
                 unit(jnp.log(f.l), *log_l_range),
-                unit(f.x, *x_range),
+                rkhs.centers_to_unit(f.x, f.l, space),
                 unit(f.a, *a_range)[..., None],
             ],
             axis=-1,
         )
 
     def from_unit(p: Float[Array, "n k m p"]) -> rkhs.RBFMixture:
-        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
+        log_l, u, a = jnp.split(p, [d, 2 * d], axis=-1)
         log_l = utils.rescale(log_l, *log_l_range)
-        x = utils.rescale(x, *x_range)
         a = utils.rescale(a, *a_range)
-        return rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a.squeeze(-1))
+        return mixture(log_l, u, a.squeeze(-1))
 
     # incumbent as the best posterior mean over the observations, consistent with the nugget
     mu_obs, _ = marginals(surrogate.x)
@@ -193,14 +200,14 @@ def optimize_expected_improvement(
     starts = starts.reshape(batch_size, multi_starts).T
     candidates = jax.tree.map(lambda z: z[starts], candidates)
 
-    log_l, x, a = jnp.log(candidates.l), candidates.x, candidates.a
+    u = rkhs.centers_to_unit(candidates.x, candidates.l, space)
+    log_l, a = jnp.log(candidates.l), candidates.a
 
     # box constrained L-BFGS-B, analytic log EI for a single point, MC batch log EI else
     eps = jr.normal(key_mc, (n_mc, batch_size))
 
-    def loss(lxa):
-        log_l, x, a = lxa
-        f = rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a)
+    def loss(lua):
+        f = mixture(*lua)
         mu, cov = surrogate.predict(f)
         if batch_size == 1:
             mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
@@ -208,12 +215,11 @@ def optimize_expected_improvement(
         cov = cov + 1e-6 * jnp.trace(cov) / batch_size * jnp.eye(batch_size)
         return -q_log_expected_improvement(mu, cov, y_best, eps)
 
-    solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds)
-    results = jax.vmap(solve)((log_l, x, a))
+    solve = lambda lua: vlse.optim.minimise(loss, lua, bounds=bounds)
+    results = jax.vmap(solve)((log_l, u, a))
 
     # return the batch with the best Monte Carlo EI
     all_dead = ~jnp.any(jnp.isfinite(results.f))
     results = eqx.error_if(results, all_dead, "all restarts ended with non finite loss")
     best = jnp.nanargmin(results.f)
-    log_l, x, a = jax.tree.map(lambda z: z[best], results.x)
-    return rkhs.RBFMixture(l=fix(jnp.exp(log_l)), x=x, a=a)
+    return mixture(*jax.tree.map(lambda z: z[best], results.x))

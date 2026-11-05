@@ -4,12 +4,13 @@ Shared by the classic control and MuJoCo problem classes. The simulator is
 Gymnasium's own; only the policy parameterization differs:
 
 - open loop:   f(t) -> action, with t the normalized time in [0, 1]  (d = 1)
-- closed loop: f(s) -> action, with s the observation mapped to [0, 1]^d
+- closed loop: f(s) -> action, with s the observation mapped to [0, 1]^d, angles
+  observed as (sin, cos) pairs folded into one periodic input
 
 f outputs normalized actions in (-1, 1), rescaled to the action space.
 """
 
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 from jaxtyping import Array, Float, Scalar
 
 import numpy as np
@@ -28,7 +29,9 @@ class GymControl:
     Observations with finite bounds in the observation space are mapped linearly
     to [0, 1]. Unbounded ones are standardized with statistics of random-action
     rollouts (seeds disjoint from the evaluation ones) and squashed by a sigmoid.
-    A rollout that goes non-finite stops there, keeping the return collected so far.
+    Each (sin, cos) index pair in angles is replaced by the angle as a fraction of
+    a turn, declared a periodic input. A rollout that goes non-finite stops there,
+    keeping the return collected so far.
     """
 
     optimum: float | None = None
@@ -40,6 +43,7 @@ class GymControl:
         n_rollouts: int = 5,
         max_episode_steps: int | None = None,
         n_calibration_rollouts: int = 10,
+        angles: Sequence[tuple[int, int]] = (),
     ):
         if mode not in ("open", "closed"):
             raise ValueError(f"mode must be 'open' or 'closed', got {mode!r}")
@@ -52,7 +56,18 @@ class GymControl:
         self.action_high = self.env.action_space.high.astype(np.float64)
 
         self.k = self.env.action_space.shape[0]
-        self.d = 1 if mode == "open" else self.env.observation_space.shape[0]
+        self.outputs = ("tanh",) * self.k
+
+        # each angle sits at its sin index, its cos index is dropped
+        n_obs = self.env.observation_space.shape[0]
+        self.angles = tuple(angles)
+        sin_idx, cos_idx = {s for s, _ in self.angles}, {c for _, c in self.angles}
+        self.keep = np.array([i for i in range(n_obs) if i not in cos_idx], dtype=int)
+        if mode == "open":
+            self.d, self.inputs = 1, ("box",)
+        else:
+            self.d = len(self.keep)
+            self.inputs = tuple("periodic" if i in sin_idx else "box" for i in self.keep)
 
         low = self.env.observation_space.low.astype(np.float64)
         high = self.env.observation_space.high.astype(np.float64)
@@ -69,11 +84,14 @@ class GymControl:
 
     def normalize_observation(self, obs: np.ndarray) -> Float[Array, "d"]:
         span = np.where(self.bounded, self.obs_high - self.obs_low, 1.0)
-        linear = (obs - np.where(self.bounded, self.obs_low, 0.0)) / span
-        if self.bounded.all():
-            return jnp.asarray(linear.clip(0.0, 1.0))
-        squashed = jax.nn.sigmoid((obs - self.obs_mean) / self.obs_std)
-        return jnp.where(self.bounded, linear.clip(0.0, 1.0), squashed)
+        z = ((obs - np.where(self.bounded, self.obs_low, 0.0)) / span).clip(0.0, 1.0)
+        if not self.bounded.all():
+            squashed = jax.nn.sigmoid((obs - self.obs_mean) / self.obs_std)
+            z = jnp.where(self.bounded, z, squashed)
+        z = jnp.asarray(z)
+        for s, c in self.angles:
+            z = z.at[s].set((jnp.arctan2(obs[s], obs[c]) / (2 * jnp.pi)) % 1.0)
+        return z[self.keep]
 
     def scale_action(self, action: Float[Array, "k"]) -> np.ndarray:
         action = np.asarray(action, dtype=np.float64)

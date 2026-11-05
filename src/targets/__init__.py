@@ -8,8 +8,11 @@ class TestFunction(Protocol):
     """Functional objective to minimize over f: [0, 1]^d -> R^k.
 
     Conventions shared by the targets:
-    - f is called pointwise on the unit cube and returns k outputs in (-1, 1),
-      squashed by tanh; each target maps that range to its own units.
+    - f is called pointwise on the unit cube and returns k outputs; each target
+      maps them to its own units.
+    - inputs and outputs, when present, declare the constraint type of each
+      dimension: inputs "box" or "periodic" (the circle [0, 1)), outputs "tanh"
+      (in (-1, 1)) or "linear". Absent, every input is a box and every output tanh.
     - the returned value is finite, so the surrogate never sees nan or inf.
     - optimum is the infimum of the objective when known (None otherwise), so
       results can be reported as regret y - optimum.

@@ -16,13 +16,13 @@ PROFILES = [
 ]
 
 
-def random_functions(n, d, k=1, m=4, seed=0):
+def random_functions(n, d, k=1, m=4, seed=0, space=rkhs.Space()):
     return rkhs.RBFMixture.from_lhs(
         jax.random.key(seed),
         (n, k, m, d),
         (jnp.asarray(0.01), jnp.asarray(1.0)),
-        (jnp.asarray(0.0), jnp.asarray(1.0)),
         (jnp.asarray(-1.0), jnp.asarray(1.0)),
+        space,
     )
 
 
@@ -57,10 +57,10 @@ def test_ridge_optimum_is_none_without_normalization():
 
 
 CONTROL = [
-    (ClassicControl, "pendulum", "closed", 3, 1),
+    (ClassicControl, "pendulum", "closed", 2, 1),
     (ClassicControl, "pendulum", "open", 1, 1),
     (ClassicControl, "mountain_car", "closed", 2, 1),
-    (Mujoco, "reacher", "closed", 10, 2),
+    (Mujoco, "reacher", "closed", 8, 2),
     (Mujoco, "hopper", "open", 1, 3),
     (Mujoco, "hopper", "closed", 11, 3),
 ]
@@ -70,7 +70,9 @@ CONTROL = [
 def test_control_tasks_are_finite_and_deterministic(problem, name, mode, d, k):
     t = problem(name, mode, n_rollouts=2, max_episode_steps=20)
     assert (t.d, t.k, t.optimum) == (d, k, None)
-    f = jax.tree.map(lambda z: z[0], random_functions(1, d, k=k))
+    assert (len(t.inputs), t.outputs) == (d, ("tanh",) * k)
+    space = rkhs.Space(t.inputs, t.outputs)
+    f = jax.tree.map(lambda z: z[0], random_functions(1, d, k=k, space=space))
     y = t(f)
     assert bool(jnp.isfinite(y))
     assert float(y) == float(t(f))
@@ -95,3 +97,23 @@ def test_unknown_task_and_mode_are_rejected():
         Mujoco("ant")
     with pytest.raises(ValueError, match="mode"):
         ClassicControl("pendulum", "feedback")
+
+
+@pytest.mark.parametrize(
+    "problem, name, inputs",
+    [
+        (ClassicControl, "pendulum", ("periodic", "box")),
+        (Mujoco, "inverted_double_pendulum", ("box", "periodic", "periodic") + ("box",) * 4),
+        (Mujoco, "reacher", ("periodic", "periodic") + ("box",) * 6),
+    ],
+)
+def test_angle_pairs_fold_into_periodic_inputs(problem, name, inputs):
+    t = problem(name, "closed")
+    assert t.inputs == inputs
+    obs, _ = t.env.reset(seed=0)
+    z = np.asarray(t.normalize_observation(obs))
+    assert z.shape == (len(inputs),)
+    assert bool(((z >= 0.0) & (z <= 1.0)).all())
+    for (s, c), i in zip(t.angles, np.flatnonzero(np.array(inputs) == "periodic")):
+        angle = 2 * np.pi * z[i]
+        np.testing.assert_allclose([np.sin(angle), np.cos(angle)], [obs[s], obs[c]], atol=1e-5)
