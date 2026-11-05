@@ -2,6 +2,7 @@ from typing import NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
 import jax.numpy as jnp
+from jax.scipy.special import erf
 import equinox as eqx
 from . import kernels, utils
 
@@ -79,17 +80,46 @@ def rbf_inner(
 
 
 @eqx.filter_jit
+def l2_inner(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+    """L2 inner product of RBF mixtures over the unit box [0, 1]^d, in closed form.
+
+    Per dimension, the product of two Gaussian atoms is a Gaussian in t of
+    variance s = l1 l2 / (l1 + l2) centered at mu = (x1 l2 + x2 l1) / (l1 + l2),
+    times exp(-(x1 - x2)^2 / (2 (l1 + l2))), so it integrates to erf terms.
+    """
+    # broadcast to common shape (..., m1, m2, d)
+    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
+    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+
+    ls = l1 + l2
+    s = l1 * l2 / ls
+    mu = (x1 * l2 + x2 * l1) / ls
+    w = jnp.sqrt(2.0 * s)
+    box = 0.5 * jnp.sqrt(jnp.pi) * w * (erf((1.0 - mu) / w) + erf(mu / w))
+    K = jnp.prod(jnp.exp(-0.5 * (x1 - x2) ** 2 / ls) * box, axis=-1)
+    return jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
+
+
+def _distance(inner, f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+    """Norm of the difference, expanded through an inner product."""
+    d2 = inner(f1, f1) + inner(f2, f2) - 2.0 * inner(f1, f2)
+    # fix nan and inf gradients returning the subgradient instead
+    d2 = jnp.nan_to_num(d2, nan=jnp.inf, posinf=jnp.inf)
+    d = jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0))
+    return jnp.where(d2 > 0.0, d, 0.0)
+
+
+@eqx.filter_jit
 def rbf_distance(
     l0: Float[Array, "... d"],
     f1: RBFMixture,
     f2: RBFMixture,
 ) -> Float[Array, "..."]:
     """Distance between RBF mixtures, seen in a wider RBF rkhs."""
-    sqn1 = rbf_inner(l0, f1, f1)
-    sqn2 = rbf_inner(l0, f2, f2)
-    cross = rbf_inner(l0, f1, f2)
-    d2 = sqn1 + sqn2 - 2.0 * cross
-    # fix nan and inf gradients returning the subgradient instead
-    d2 = jnp.nan_to_num(d2, nan=jnp.inf, posinf=jnp.inf)
-    d = jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0))
-    return jnp.where(d2 > 0.0, d, 0.0)
+    return _distance(lambda u, v: rbf_inner(l0, u, v), f1, f2)
+
+
+@eqx.filter_jit
+def l2_distance(f1: RBFMixture, f2: RBFMixture) -> Float[Array, "..."]:
+    """L2 distance between RBF mixtures over the unit box [0, 1]^d."""
+    return _distance(l2_inner, f1, f2)

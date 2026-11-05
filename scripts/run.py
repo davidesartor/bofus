@@ -54,6 +54,7 @@ def run(
     x_range: tuple[Scalar, Scalar] = (jnp.asarray(0.0), jnp.asarray(1.0)),
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-1.0), jnp.asarray(1.0)),
     fixed_l: float | None = None,
+    distance: gp.Distance = "rkhs",
     save_path: str | None = None,
     verbose: bool = False,
 ) -> dict:
@@ -89,7 +90,7 @@ def run(
             key, key_fit, key_acq = jr.split(key, 3)
             init = None if surrogate is None else (surrogate.l0, surrogate.rho, surrogate.g)
             surrogate = gp.GaussianProcess.fit(
-                fs, ys, profile=profile, init=init, key=key_fit
+                fs, ys, profile=profile, init=init, key=key_fit, distance=distance
             )
 
             # Optimize the acquisition function to find the next batch to evaluate
@@ -183,6 +184,12 @@ if __name__ == "__main__":
         default=None,
         help="share this squared lengthscale across atoms (non-adaptive ablation)",
     )
+    parser.add_argument(
+        "--distance",
+        choices=["rkhs", "l2"],
+        default="rkhs",
+        help="distance between functions in the GP kernel",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--results_dir", default="results/neurips")
     args = parser.parse_args()
@@ -191,6 +198,7 @@ if __name__ == "__main__":
     profile = profiles_options[args.profile]
 
     method = "ours_adaptive" if args.fixed_l is None else f"ours_fixed_l{args.fixed_l:g}"
+    method += "" if args.distance == "rkhs" else f"_{args.distance}"
     save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
@@ -203,6 +211,7 @@ if __name__ == "__main__":
         initial_acquisitions=args.initial_acquisitions,
         batch_size=args.batch_size,
         fixed_l=args.fixed_l,
+        distance=args.distance,
         save_path=save_path,
         verbose=args.verbose,
     )

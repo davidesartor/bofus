@@ -133,8 +133,10 @@ def optimize_expected_improvement(
     mask = jnp.isfinite(surrogate.y)
 
     # ambient inner products need l + l_obs - l0 > 0 and 2l - l0 > 0, so clip the lower end
-    l_floor = jnp.maximum(surrogate.l0.max() - surrogate.x.l.min(), surrogate.l0.max() / 2) * 1.01
-    l_range = (l_range[0].clip(min=l_floor), l_range[1])
+    if surrogate.distance == "rkhs":
+        l0 = surrogate.l0.max()
+        l_floor = jnp.maximum(l0 - surrogate.x.l.min(), l0 / 2) * 1.01
+        l_range = (l_range[0].clip(min=l_floor), l_range[1])
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
     if fixed_l is not None:
         # keep a nonzero span for the unit transforms, l itself is overridden below

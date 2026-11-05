@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional
+from typing import Literal, NamedTuple, Optional
 from jaxtyping import Array, Float, Key, Scalar
 
 import jax
@@ -54,21 +54,35 @@ def loglikelihood(
     return -0.5 * (n * jnp.log(nu) + logdetK)
 
 
+Distance = Literal["rkhs", "l2"]
+
+
 @eqx.filter_jit
 def pairwise_distance(
     l0: Float[Array, "k d"],
     rho: Float[Array, "k"],
     f1: rkhs.RBFMixture,  # assumed to be (n1, k, m, d)
     f2: Optional[rkhs.RBFMixture] = None,  # assumed to be (n2, k, m, d)
+    distance: Distance = "rkhs",
 ) -> Float[Array, "n1 n2"]:
-    """Ambient-space distance matrix between two sets of functions."""
+    """Distance matrix between two sets of functions, per output weighted by rho.
+
+    "rkhs" measures in the ambient rkhs of lengthscale l0, "l2" in L2 over the
+    unit box (l0 is then unused).
+    """
     should_fill_diag = f2 is None
     f2 = f1 if f2 is None else f2
 
     # get the weighted distance
     f1 = jax.tree.map(lambda z: z[:, None], f1)
     f2 = jax.tree.map(lambda z: z[None, :], f2)
-    d2 = jnp.sum(rho * rkhs.rbf_distance(l0, f1, f2) ** 2, axis=-1)
+    if distance == "rkhs":
+        per_output = rkhs.rbf_distance(l0, f1, f2)
+    elif distance == "l2":
+        per_output = rkhs.l2_distance(f1, f2)
+    else:
+        raise ValueError(f"unknown distance {distance!r}")
+    d2 = jnp.sum(rho * per_output**2, axis=-1)
 
     # floating point arithmetic is not guaranteed to cancel out
     if should_fill_diag:
@@ -96,6 +110,7 @@ class GaussianProcess(NamedTuple):
     x: rkhs.RBFMixture
     y: Float[Array, "o"]
     Koo_chol: Float[Array, "o o"]  # cached for posterior evaluation
+    distance: Distance = "rkhs"  # between functions, see pairwise_distance
 
     @staticmethod
     @eqx.filter_jit
@@ -109,6 +124,7 @@ class GaussianProcess(NamedTuple):
         init: Optional[tuple[Float[Array, "k d"], Float[Array, "k"], Scalar]] = None,
         key: Optional[Key] = None,
         n_restarts: int = 2,
+        distance: Distance = "rkhs",
     ):
         """Maximum likelihood fit over (l0, rho, g), best of several L-BFGS-B starts.
 
@@ -134,15 +150,18 @@ class GaussianProcess(NamedTuple):
         # rho0 absorbs the ambient-norm prefactor at the typical observed lengthscale
         log_l = jnp.where(observed, jnp.log(f.l), 0.0)
         lbar = jnp.exp(log_l.sum(axis=(0, 2)) / (m * observed.sum()))
+        # the l2 distance has no ambient lengthscale, so l0 is inert and needs no prefactor
         rho_prefactor = lambda l0: jnp.prod(jnp.sqrt(l0 * (2 * lbar - l0)) / lbar, -1)
+        if distance == "l2":
+            rho_prefactor = lambda l0: jnp.ones(k)
 
         # L-BFGS-B over the log-space box
         def mle_loss(log_params) -> Scalar:
             log_l0, log_rho, log_g = log_params
             l0, g = jnp.exp(log_l0), jnp.exp(log_g)
             rho = rho_prefactor(l0) * jnp.exp(log_rho)
-            Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
-            return -loglikelihood(Koo, y)
+            Koo = profile(pairwise_distance(l0, rho, f, distance=distance))
+            return -loglikelihood(Koo + g * jnp.eye(len(y)), y)
 
         starts = [(log_l0, log_rho, log_g)]
         if init is not None:
@@ -169,7 +188,7 @@ class GaussianProcess(NamedTuple):
         log_l0, log_rho, log_g = jax.tree.map(lambda z: z[best], results.x)
         l0, g = jnp.exp(log_l0), jnp.exp(log_g)
         rho = rho_prefactor(l0) * jnp.exp(log_rho)
-        return GaussianProcess.condition(f, y, profile, l0, rho, g)
+        return GaussianProcess.condition(f, y, profile, l0, rho, g, distance)
 
     @staticmethod
     @eqx.filter_jit
@@ -180,23 +199,26 @@ class GaussianProcess(NamedTuple):
         l0: Float[Array, "k d"],
         rho: Float[Array, "k"],
         g: Scalar,
+        distance: Distance = "rkhs",
     ):
         """Condition on the observations at fixed (l0, rho, g), profiling out b and nu."""
-        Koo = profile(pairwise_distance(l0, rho, f)) + g * jnp.eye(len(y))
+        Koo = profile(pairwise_distance(l0, rho, f, distance=distance))
+        Koo = Koo + g * jnp.eye(len(y))
         mask = jnp.isfinite(y)
         Koo = utils.mask_covariance(Koo, mask)
         b, nu = trend_and_scale(cho_factor(Koo)[0], y)
         Koo = utils.mask_covariance(nu * Koo, mask)
         Koo_chol, _ = cho_factor(Koo)
-        return GaussianProcess(profile, l0, rho, g, nu, b, f, y, Koo_chol)
+        return GaussianProcess(profile, l0, rho, g, nu, b, f, y, Koo_chol, distance)
 
     @eqx.filter_jit
     def predict(
         self, f: rkhs.RBFMixture  # assumed to be (q, k, m, d)
     ) -> tuple[Float[Array, "q"], Float[Array, "q q"]]:
         # cancellation only approximates the exact zeros of coincident functions
-        Kxx = self.nu * self.profile(pairwise_distance(self.l0, self.rho, f))
-        Kox = self.nu * self.profile(pairwise_distance(self.l0, self.rho, self.x, f))
+        dist = lambda *fs: pairwise_distance(self.l0, self.rho, *fs, distance=self.distance)
+        Kxx = self.nu * self.profile(dist(f))
+        Kox = self.nu * self.profile(dist(self.x, f))
 
         # a nan observation marks padding, mask it out everywhere
         mask = jnp.isfinite(self.y)

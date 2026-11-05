@@ -104,3 +104,22 @@ def test_distance_matches_norm_of_pointwise_difference():
         - 2.0 * rkhs.rbf_inner(l0, f1, f2)
     )
     assert rkhs.rbf_distance(l0, f1, f2) ** 2 == pytest.approx(d2, rel=1e-5)
+
+
+def test_l2_inner_matches_quadrature_on_unit_box():
+    """Closed-form L2 inner product over [0, 1]^2 against a midpoint-rule grid."""
+    f1 = random_mixture(jax.random.key(3), k=2, m=4, d=2, l_min=0.01)
+    f2 = random_mixture(jax.random.key(4), k=2, m=3, d=2, l_min=0.01)
+    n = 400
+    t = (jnp.arange(n) + 0.5) / n
+    grid = jnp.stack(jnp.meshgrid(t, t, indexing="ij"), -1).reshape(-1, 2)
+    quadrature = jnp.mean(f1(grid) * f2(grid), axis=0)
+    assert rkhs.l2_inner(f1, f2) == pytest.approx(quadrature, rel=1e-3, abs=1e-5)
+
+
+def test_l2_distance_is_a_metric_on_samples():
+    f1 = random_mixture(jax.random.key(5), l_min=0.05)
+    f2 = random_mixture(jax.random.key(6), l_min=0.05)
+    assert rkhs.l2_distance(f1, f1) == pytest.approx(0.0, abs=1e-3)
+    assert rkhs.l2_distance(f1, f2) == pytest.approx(rkhs.l2_distance(f2, f1), rel=1e-5)
+    assert bool((rkhs.l2_distance(f1, f2) > 0.0).all())
