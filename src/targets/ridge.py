@@ -7,17 +7,20 @@ import jax.random as jr
 import equinox as eqx
 from vlse.functions.base import TestFunction as Profile
 
+from targets import evaluate_on
+
 
 class Ridge:
     """Profile composed with d = profile.d random linear functionals g_i = b_i + int w_i f.
 
     The weights w_i are trig polynomials of degree <= max_frequency, normalized in closed
-    form to ||w_i||_L2 = 1. Calls on a squared exponential Euclidean RKHS function take
-    exact_value, which evaluates the integrals in closed form but has to read f's basis
-    points and coefficients. Anything else falls back to quadrature on self.x: with
-    n_points=None a midpoint tensor grid (deterministic, O(h^2), since w_i * f is not
-    band-limited), with a finite n_points the Monte Carlo estimate mean_j w_i(x_j) f(x_j),
-    which converges to the same functional at the usual 1/sqrt(n) rate.
+    form to ||w_i||_L2 = 1. The integrals are estimated on self.x: with n_points=None a
+    midpoint tensor grid (deterministic, O(h^2), since w_i * f is not band-limited), with
+    a finite n_points the Monte Carlo estimate mean_j w_i(x_j) f(x_j).
+
+    The functionals are squashed to the unit cube by a sigmoid before the profile, so any
+    output range of f is valid. With a normalized profile (minimum shifted to 0) and the
+    functionals independent, the infimum of the objective is the profile minimum, 0.
     """
 
     def __init__(
@@ -30,6 +33,7 @@ class Ridge:
         self.d = d = profile.d
         self.k = 1
         self.profile = profile
+        self.optimum = 0.0 if bool(profile.normalized) else None
         self.n_points = n_points
         k1, k2, k3, k4 = jr.split(jr.key(seed), 4)
 
@@ -75,5 +79,6 @@ class Ridge:
     @eqx.filter_jit
     def __call__(self, f: Callable[[Float[Array, "d"]], Float[Array, "k"]]) -> Scalar:
         """Profile of the quadrature estimates of g_i = b_i + int w_i f, squashed to [0, 1]."""
-        g = self.b + jnp.mean(self.w * jax.vmap(f)(self.x).squeeze(-1), axis=-1)
+        fx = evaluate_on(f, self.x, self.k)[:, 0]
+        g = self.b + jnp.mean(self.w * fx, axis=-1)
         return self.profile(jax.nn.sigmoid(g))

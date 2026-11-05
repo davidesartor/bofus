@@ -120,7 +120,11 @@ def run(
 
         # checkpoint the completed stage so long runs are inspectable mid-flight
         if save_path is not None:
-            np.savez(save_path, l=fs.l[:i], x=fs.x[:i], a=fs.a[:i], y=ys[:i])
+            optimum = getattr(target_fn, "optimum", None)
+            optimum = np.nan if optimum is None else optimum
+            np.savez(
+                save_path, l=fs.l[:i], x=fs.x[:i], a=fs.a[:i], y=ys[:i], optimum=optimum
+            )
 
     total_acquisitions = i
 
