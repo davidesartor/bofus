@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paper reference sparsity</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+:root{--surface:#fcfcfb;--plane:#f4f4f0;--ink:#0b0b0b;--muted:#777770;--grid:#deded6;--blue:#2a78d6;--blue-light:#9ec5f4;--border:rgba(11,11,11,.12)}
+*{box-sizing:border-box}body{margin:0;padding:24px;background:var(--plane);color:var(--ink);font-family:Georgia,"Times New Roman",serif}.wrap{max-width:1280px;margin:auto;display:grid;gap:16px}header{display:flex;justify-content:space-between;align-items:end;gap:16px;flex-wrap:wrap}h1{font-size:26px;margin:0}.sub,.meta,.controls,.hint,.legend,.target,table{font:12px ui-monospace,monospace}.sub{color:var(--muted);margin-top:6px}.targets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center}.targets span{color:var(--muted);margin-right:4px}.target{font-weight:600;border:1px solid var(--border);background:var(--surface);border-radius:5px;padding:7px 10px;cursor:pointer}.target.active{background:var(--ink);color:white}.grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(340px,5fr);gap:16px}@media(max-width:900px){.grid{grid-template-columns:1fr}}.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:15px}.panel h2{font-size:15px;margin:0 0 10px}.meta{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);margin-bottom:8px}.meta b{color:var(--ink)}.controls{display:flex;align-items:center;gap:10px;margin-top:10px}.controls input{flex:1;accent-color:var(--blue)}.legend{display:flex;gap:16px;margin-top:8px;color:var(--muted)}.sw{display:inline-block;width:18px;border-top:3px solid;vertical-align:middle;margin-right:5px}.hint{color:var(--muted);margin-top:8px}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--grid)}th{color:var(--muted);font-weight:600}td:first-child,th:first-child{text-align:left}tr.current td{background:#eef4fc;font-weight:600}.modebar-btn{font-family:ui-monospace,monospace!important}
+</style></head><body><main class="wrap">
+<header><div><h1>Paper references / sparse RBF fits</h1><div class="sub">the paper's min-jerk moves, least-squares fitted with m Gaussian bumps per joint inside the BO's search box, scored under our objective</div></div>
+<div><div class="targets" id="references"><span>reference</span></div><div class="targets" id="floors"><span>lengthscale floor</span></div></div></header>
+<div class="grid">
+<section class="panel"><h2 id="fit-title">Reference vs fit</h2><div class="meta"><span>hit at <b id="t-hit">-</b></span><span>paper cost <b id="cost-paper">-</b></span><span>fit cost <b id="cost">-</b></span><span>RMSE pre-hit <b id="rmse-pre">-</b></span><span>full <b id="rmse-full">-</b></span><span>min l <b id="min-l">-</b></span></div><div id="joints" style="height:520px"></div><div class="controls"><span>bumps m</span><input id="m" type="range" min="1" max="8" value="1" aria-label="Number of bumps"><b id="m-label">1</b></div><div class="legend"><span><i class="sw" style="border-color:#0b0b0b"></i>paper reference</span><span><i class="sw" style="border-color:#2a78d6"></i>m-bump fit</span><span><i class="sw" style="border-color:#9ec5f4"></i>single bumps</span><span><i class="sw" style="border-color:#e8e8e2;border-top-width:8px"></i>after the hit</span></div><div class="hint">Normalized joint angle against t / horizon. The fit only has to match the reference before the hit; the shaded tail does not affect the objective.</div>
+<table id="bumps"></table></section>
+<section class="panel"><h2>Fit quality against m</h2><div class="meta"><span>lengthscale floor <b id="floor-label">-</b></span><span>references <b id="n-refs">-</b></span></div><div id="summary" style="height:520px"></div><div class="hint">All references at the selected floor; the chosen one is drawn solid, the dashed line marks the current m. Fits that hit the target (cost 0) are drawn at 10⁻³ on the log axis.</div>
+<table id="metrics"></table></section>
+</div></main>
+<script>
+const DATA=/*__DATA__*/;
+const REFS=Object.keys(DATA.references),SERIES=['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#4a3aa7'];
+const COST_FLOOR=1e-3;
+const hash=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
+let ref=REFS.includes(hash.ref)?hash.ref:REFS[0],floor=DATA.l_floors.includes(Number(hash.l))?Number(hash.l):DATA.l_floors[0],m=DATA.ms.includes(Number(hash.m))?Number(hash.m):DATA.ms[0];
+const $=id=>document.getElementById(id);const plotConfig={responsive:true,displaylogo:false,displayModeBar:true};
+const fmt=(v,d=4)=>Number(v).toFixed(d);
+const key=(r,l,mm)=>`${r}/l_${l}/m_${mm}`;
+const fit=()=>DATA.fits[key(ref,floor,m)];
+function button(box,label,active,onclick){const b=document.createElement('button');b.className='target'+(active?' active':'');b.textContent=label;b.onclick=()=>{box.querySelectorAll('.target').forEach(x=>x.classList.remove('active'));b.classList.add('active');onclick()};box.appendChild(b);return b}
+function bumps(p,t,mm){const l=p.slice(0,mm),x=p.slice(mm,2*mm),a=p.slice(2*mm);return l.map((li,i)=>t.map(ti=>a[i]*Math.exp(-0.5*(ti-x[i])**2/li)))}
+function axisStyle(extra){return Object.assign({gridcolor:'#e6e6e0',zerolinecolor:'#e6e6e0',linecolor:'#deded6',tickfont:{size:10,family:'ui-monospace,monospace',color:'#777770'},titlefont:{size:11,family:'ui-monospace,monospace',color:'#777770'}},extra||{})}
+function drawJoints(){
+  const R=DATA.references[ref],F=fit(),k=R.joints.length,traces=[],layout={margin:{l:52,r:12,t:10,b:40},paper_bgcolor:'#fcfcfb',plot_bgcolor:'#fcfcfb',showlegend:false,hovermode:'x unified',shapes:[{type:'rect',xref:'x',yref:'paper',x0:R.t_hit/R.horizon,x1:1,y0:0,y1:1,fillcolor:'#e8e8e2',opacity:.6,line:{width:0},layer:'below'}]};
+  const gap=0.06,h=(1-gap*(k-1))/k;
+  R.joints.forEach((name,j)=>{
+    const ya=j?`y${j+1}`:'y',ax=j?`yaxis${j+1}`:'yaxis',top=1-j*(h+gap);
+    layout[ax]=axisStyle({domain:[top-h,top],title:{text:name},range:[-1.05,1.05],zeroline:true});
+    const B=bumps(F.params[j],R.t,m),sum=R.t.map((_,i)=>B.reduce((s,b)=>s+b[i],0));
+    B.forEach((b,i)=>traces.push({x:R.t,y:b,yaxis:ya,mode:'lines',line:{color:'#9ec5f4',width:1},hoverinfo:'skip'}));
+    traces.push({x:R.t,y:R.f.map(row=>row[j]),yaxis:ya,mode:'lines',name:'paper',line:{color:'#0b0b0b',width:1.5},hovertemplate:'paper %{y:.3f}<extra></extra>'});
+    traces.push({x:R.t,y:sum,yaxis:ya,mode:'lines',name:'fit',line:{color:'#2a78d6',width:2.5},hovertemplate:'fit %{y:.3f}<extra></extra>'});
+  });
+  layout.xaxis=axisStyle({range:[0,1],title:{text:'t / horizon'},anchor:`y${k>1?k:''}`});
+  Plotly.react('joints',traces,layout,plotConfig);
+}
+function drawSummary(){
+  const traces=[],x=DATA.ms;
+  REFS.forEach((r,i)=>{
+    const rows=x.map(mm=>DATA.fits[key(r,floor,mm)]),on=r===ref,style={color:SERIES[i],width:on?2.5:1.5},op=on?1:.3;
+    traces.push({x,y:rows.map(f=>f.rmse_prehit),name:r,legendgroup:r,mode:'lines+markers',line:style,marker:{size:6},opacity:op,hovertemplate:`${r} m=%{x}: RMSE %{y:.4f}<extra></extra>`});
+    traces.push({x,y:rows.map(f=>Math.max(f.cost,COST_FLOOR)),customdata:rows.map(f=>f.cost),name:r,legendgroup:r,showlegend:false,yaxis:'y2',mode:'lines+markers',line:style,marker:{size:6},opacity:op,hovertemplate:`${r} m=%{x}: cost %{customdata:.4f}<extra></extra>`});
+  });
+  const cp=DATA.references[ref].cost_paper;
+  const layout={margin:{l:52,r:12,t:50,b:40},paper_bgcolor:'#fcfcfb',plot_bgcolor:'#fcfcfb',hovermode:'closest',legend:{orientation:'h',y:1.12,yanchor:'bottom',font:{size:10,family:'ui-monospace,monospace'}},
+    xaxis:axisStyle({title:{text:'bumps m'},dtick:1,anchor:'y2'}),
+    yaxis:axisStyle({domain:[.55,1],type:'log',title:{text:'pre-hit RMSE'}}),
+    yaxis2:axisStyle({domain:[0,.45],type:'log',title:{text:'objective of the fit'}}),
+    shapes:[{type:'line',xref:'x',yref:'paper',x0:m,x1:m,y0:0,y1:1,line:{color:'#777770',width:1,dash:'dash'}},{type:'line',xref:'paper',yref:'y2',x0:0,x1:1,y0:Math.max(cp,COST_FLOOR),y1:Math.max(cp,COST_FLOOR),line:{color:'#0b0b0b',width:1,dash:'dot'}}],
+    annotations:[{xref:'paper',yref:'y2',x:0.01,y:Math.log10(Math.max(cp,COST_FLOOR)),text:`paper cost ${fmt(cp,3)}`,showarrow:false,xanchor:'left',yanchor:'bottom',font:{size:10,family:'ui-monospace,monospace',color:'#777770'}}]};
+  Plotly.react('summary',traces,layout,plotConfig);
+}
+function drawTables(){
+  const R=DATA.references[ref],F=fit();
+  let rows=`<tr><th>joint</th><th>bump</th><th>center (s)</th><th>width σ (s)</th><th>amplitude</th></tr>`;
+  R.joints.forEach((name,j)=>{const p=F.params[j];for(let i=0;i<m;i++)rows+=`<tr><td>${i?'':name}</td><td>${i+1}</td><td>${fmt(p[m+i]*R.horizon,3)}</td><td>${fmt(Math.sqrt(p[i])*R.horizon,3)}</td><td>${fmt(p[2*m+i],3)}</td></tr>`});
+  $('bumps').innerHTML=rows;
+  let met=`<tr><th>m</th><th>RMSE pre-hit</th><th>RMSE full</th><th>cost</th><th>min l</th></tr>`;
+  DATA.ms.forEach(mm=>{const f=DATA.fits[key(ref,floor,mm)];met+=`<tr class="${mm===m?'current':''}"><td>${mm}</td><td>${fmt(f.rmse_prehit)}</td><td>${fmt(f.rmse_full)}</td><td>${fmt(f.cost)}</td><td>${f.min_l.toExponential(2)}</td></tr>`});
+  $('metrics').innerHTML=met;
+}
+function sync(){
+  const R=DATA.references[ref],F=fit();
+  $('fit-title').textContent=`${ref} · ${R.joints.length} joints · m = ${m}`;
+  $('t-hit').textContent=`${fmt(R.t_hit,2)} s of ${R.horizon} s`;$('cost-paper').textContent=fmt(R.cost_paper,3);$('cost').textContent=fmt(F.cost,3);
+  $('rmse-pre').textContent=fmt(F.rmse_prehit);$('rmse-full').textContent=fmt(F.rmse_full);$('min-l').textContent=F.min_l.toExponential(2);
+  $('m-label').textContent=m;$('floor-label').textContent=floor;$('n-refs').textContent=REFS.length;
+  history.replaceState(null,'',`#ref=${ref}&l=${floor}&m=${m}`);
+  drawJoints();drawSummary();drawTables();
+}
+REFS.forEach(r=>button($('references'),r,r===ref,()=>{ref=r;sync()}));
+DATA.l_floors.forEach(l=>button($('floors'),String(l),l===floor,()=>{floor=l;sync()}));
+$('m').min=DATA.ms[0];$('m').max=DATA.ms[DATA.ms.length-1];$('m').value=m;$('m').oninput=e=>{m=Number(e.target.value);sync()};
+sync();
+</script></body></html>

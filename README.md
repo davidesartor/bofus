@@ -12,7 +12,12 @@ The code, baselines and sweep that reproduce the paper live at tag [`neurips-202
 ├── scripts/
 │   ├── run.py           # Run a single experiment
 │   ├── make_viz.py      # Build a standalone HTML visualization from a run
+│   ├── run_whip_direct.py         # DIRECT-L baseline on the whip, ported from Nah et al.
+│   ├── fit_paper_references.py    # Fit RBF mixtures to the paper's min-jerk moves
+│   ├── make_whip_dashboard.py     # Dashboard over the whip runs, every seed
+│   ├── make_sparsity_dashboard.py # Dashboard of the m-bump reference fits
 │   └── templates/       # HTML templates filled by the scripts
+├── slurm/               # Whip sweep, DIRECT-L and reference-fit jobs
 ├── src/bofus/
 │   ├── kernels.py       # Kernel profiles of distance (RBF, Matérn)
 │   ├── rkhs.py          # RBF mixtures
