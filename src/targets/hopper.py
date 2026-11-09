@@ -7,8 +7,6 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 
-jax.config.update("jax_enable_x64", True)
-
 
 class RobotParams(NamedTuple):
     mass: Float[Array, "4"] = jnp.array(
@@ -142,7 +140,7 @@ class HoppingRobot:
     """
 
     d: int = 1  # normalized time
-    m: int = 2  # hip and knee
+    k: int = 2  # hip and knee
 
     def __init__(
         self,
