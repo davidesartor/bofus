@@ -1,111 +1,95 @@
 from typing import NamedTuple, Self
 from jaxtyping import Array, Float, Scalar
 
-import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
 import equinox as eqx
-
-from . import kernels
-
-jax.config.update("jax_enable_x64", True)
-EPS = float(jnp.sqrt(jnp.finfo(float).eps))
+from . import kernels, utils
 
 
-class RKHS(NamedTuple):
-    """Separable kernel over m independent outputs: K(x, x') = profile(metric(x, x')) I."""
-
-    metric: kernels.Metric
-    profile: kernels.Profile
-    rho: Float[Array, "d"]
-    m: int = 1  # number of outputs
-
-    @property
-    def d(self) -> int:
-        return len(self.rho)
+class RBFMixture(NamedTuple):
+    l: Float[Array, "... m d"]
+    x: Float[Array, "... m d"]
+    a: Float[Array, "... m"]
 
     @eqx.filter_jit
-    def __call__(
-        self,
-        xs1: Float[Array, "n d"],
-        xs2: Float[Array, "m d"],
-    ) -> Float[Array, "n m"]:
-        return self.profile(self.metric(self.rho, xs1, xs2))
+    def __call__(self, x: Float[Array, "... d"]) -> Float[Array, "..."]:
+        """Evaluate the function at points x."""
+        x = x[..., *(None,) * self.a.ndim, :]
+        d = kernels.euclidean_distance(self.l, x, self.x)
+        y = jnp.sum(self.a * kernels.rbf(d), axis=-1)
+        return y
 
-
-class Function(NamedTuple):
-    kernel: RKHS
-    x: Float[Array, "k d"]  # basis points
-    a: Float[Array, "k m"]  # coefficients, one row per basis point
-
+    @staticmethod
     @eqx.filter_jit
-    def __call__(self, t: Float[Array, "d"]) -> Float[Array, "m"]:
-        Ktx = self.kernel(t[None, :], self.x)
-        return (Ktx @ self.a).squeeze()
+    def from_lhs(
+        key,
+        shape: tuple[int, ...],
+        l_range: tuple[Scalar, Scalar],
+        x_range: tuple[Scalar, Scalar],
+        a_range: tuple[Scalar, Scalar],
+    ) -> "RBFMixture":
+        """Latin-hypercube mixtures with log-uniform squared lengthscales."""
+        *batch, m, d = shape
+        p = utils.latin_hypercube_sample(key, (*batch, m, 2 * d + 1))
+        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
+        log_l = utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1]))
+        x = utils.rescale(x, *x_range)
+        a = utils.rescale(a, *a_range)
+        return RBFMixture(l=jnp.exp(log_l), x=x, a=a.squeeze(-1))
 
-    @classmethod
-    def from_array(
-        cls,
-        rkhs: RKHS,
-        p: Float[Array, "k d+m"],
-        x_range: tuple[float, float] = (0.0, 1.0),
-        y_range: tuple[float, float] = (-1.0, 1.0),
-        eps: float = 0.01,
-    ) -> Self:
-        x, y = p[:, : rkhs.d], p[:, rkhs.d :]
-        x = x * (x_range[1] - x_range[0]) + x_range[0]  # [0,1]->x_range
-        y = y * (y_range[1] - y_range[0]) + y_range[0]  # [0,1]->y_range
-        return cls.from_xy(rkhs, x, y, eps)
+    def pad_to(self, m: int) -> Self:
+        """Pad the mixture to a larger number of basis points."""
+        *b, m0, d = self.l.shape
+        l = jnp.ones((*b, m, d)).at[..., :m0, :].set(self.l)
+        x = jnp.zeros((*b, m, d)).at[..., :m0, :].set(self.x)
+        a = jnp.zeros((*b, m)).at[..., :m0].set(self.a)
+        return self._replace(l=l, x=x, a=a)
 
-    @classmethod
-    def from_xy(
-        cls,
-        rkhs: RKHS,
-        x: Float[Array, "k d"],
-        y: Float[Array, "k m"],
-        eps: float = 0.01,
-    ) -> Self:
-        Kxx = rkhs(x, x) + eps * jnp.eye(len(x))
-        a = jnp.linalg.solve(Kxx, y.reshape(len(x), -1))
-        return cls(kernel=rkhs, a=a, x=x)
+    def split(self) -> Self:
+        """Split every atom in two with half amplitude, leaving the function unchanged."""
+        l = jnp.concatenate([self.l, self.l], axis=-2)
+        x = jnp.concatenate([self.x, self.x], axis=-2)
+        a = jnp.concatenate([self.a / 2, self.a / 2], axis=-1)
+        return self._replace(l=l, x=x, a=a)
 
 
 @eqx.filter_jit
-def inner_product(f1: Function, f2: Function) -> Scalar:
-    """RKHS inner product, summed over the independent outputs."""
-    Kxx = f1.kernel(f1.x, f2.x)
-    return jnp.einsum("kl,ki,li->", Kxx, f1.a, f2.a)
+def rbf_inner(
+    l0: Float[Array, "... d"],
+    f1: RBFMixture,
+    f2: RBFMixture,
+) -> Float[Array, "..."]:
+    """Inner product of RBF mixtures, seen in a wider RBF rkhs."""
+    # broadcast to common shape (..., m1, m2, d)
+    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
+    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+    l0 = l0[..., None, None, :]
+
+    # lengthscale factors, patched where the pair does not fit the ambient rkhs
+    ls = l1 + l2 - l0
+    valid = jnp.all(ls > 0.0, axis=(-3, -2, -1))
+    ls = jnp.where(ls > 0.0, ls, 1.0)
+    lp = l1 * l2 / (l0 * ls)
+    scale = jnp.sqrt(jnp.prod(lp, axis=-1))
+
+    # inner kernel matrix, infinite if any pair falls outside the ambient rkhs
+    K = scale * kernels.rbf(kernels.euclidean_distance(ls, x1, x2))
+    k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
+    return jnp.where(valid, k, jnp.inf)
 
 
-class BernsteinPolynomial(NamedTuple):
-    c: Float[Array, "n+1"]
-
-    @property
-    def degree(self) -> int:
-        return self.c.shape[-1] - 1
-
-    @classmethod
-    def from_array(
-        cls, p: Float[Array, "n+1"], c_range: tuple[float, float] = (-1.0, 1.0)
-    ) -> Self:
-        c = p * (c_range[1] - c_range[0]) + c_range[0]  # [0,1]->c_range
-        return cls(c=jnp.asarray(c))
-
-    @eqx.filter_jit
-    def __call__(self, x: Float[Array, "... 1"]) -> Float[Array, "..."]:
-        n = self.degree
-        x = jax.nn.sigmoid(4 * (x - 0.5))  # soft squish to [0,1]
-        g = jsp.stats.binom.pmf(jnp.arange(n + 1), n, x)
-        return jnp.sum(self.c * g, axis=-1)
-
-    @eqx.filter_jit
-    def as_degree(self, n: int) -> Self:
-        assert n >= self.degree, "Can only bump degree up"
-        while self.degree < n:
-            # express degree n berstein polynomial as degree n+1 berstein polynomial
-            i = jnp.arange(self.degree + 2) / (self.degree + 1)
-            c_new = jnp.zeros((*self.c.shape[:-1], self.degree + 2))
-            c_new = c_new.at[..., 1:].add(i[1:] * self.c)
-            c_new = c_new.at[..., :-1].add((1 - i[:-1]) * self.c)
-            self = self._replace(c=c_new)
-        return self
+@eqx.filter_jit
+def rbf_distance(
+    l0: Float[Array, "... d"],
+    f1: RBFMixture,
+    f2: RBFMixture,
+) -> Float[Array, "..."]:
+    """Distance between RBF mixtures, seen in a wider RBF rkhs."""
+    sqn1 = rbf_inner(l0, f1, f1)
+    sqn2 = rbf_inner(l0, f2, f2)
+    cross = rbf_inner(l0, f1, f2)
+    d2 = sqn1 + sqn2 - 2.0 * cross
+    # fix nan and inf gradients returning the subgradient instead
+    d2 = jnp.nan_to_num(d2, nan=jnp.inf, posinf=jnp.inf)
+    d = jnp.sqrt(jnp.where(d2 > 0.0, d2, 1.0))
+    return jnp.where(d2 > 0.0, d, 0.0)
