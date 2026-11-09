@@ -1,0 +1,413 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ICRA 2027 submission skeleton.
+% Rules (https://2027.ieee-icra.org/contribute/call-for-icra-2027-papers-now-accepting-submissions/):
+%   - 8 pages max INCLUDING references; over-length papers are rejected without review
+%   - double-anonymous: no author names/affiliations/identifying acknowledgments
+%   - ieeeconf double-column, US letter, PDF only; optional video <= 180 s, <= 20 MB
+%   - AI-assisted writing must be disclosed in the acknowledgment section
+%   - submission deadline: September 15, 2026 (23:59 PST)
+% Every \todo{} is a hole for the robotics co-authors or for results to be filled.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}
+
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+% drafting helpers: \todo{} flags a hole, \draft{} flags prose that needs a rewrite
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\draft}[1]{\textcolor{blue}{#1}}
+
+% notation
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Hs}{\mathcal{H}}
+\newcommand{\Fs}{\mathcal{F}}
+\newcommand{\EI}{\mathrm{EI}}
+\newcommand{\vq}{\mathbf{q}}
+\newcommand{\vf}{\mathbf{f}}
+\newcommand{\vtau}{\boldsymbol{\tau}}
+
+\title{\LARGE \bf
+Learning to Manipulate a Whip with Functional Bayesian Optimization
+}
+
+% Double-anonymous: keep the author block anonymous until camera-ready.
+\author{Anonymous Submission}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+Striking a target with a whip is a canonical example of dynamic manipulation of
+a deformable object: a 4-degree-of-freedom (DOF) arm drives a 50-DOF flexible
+chain through a brief, precisely timed motion. Nah~\emph{et al.}~\cite{nah2023whip}
+showed in simulation that this task can be solved by restricting the arm to a
+single minimum-jerk submovement and searching its nine parameters with a
+derivative-free optimizer, hitting five of six targets within 39 to 249
+simulated episodes. We revisit the same task and ask whether the restriction to
+minimum-jerk primitives is necessary. We treat the zero-torque joint trajectory
+itself as the decision variable and optimize it with functional Bayesian
+optimization (FBO): the trajectory is represented as a sparse mixture of
+radial basis functions, a Gaussian process over trajectories is fitted through
+their distance in a reproducing kernel Hilbert space (RKHS), and expected
+improvement is maximized jointly over basis locations, widths and amplitudes.
+\todo{results sentence: number of episodes to hit each target, whether target 6
+is hit, comparison to the 39--249 episodes of DIRECT-L}. The learned
+trajectories are not minimum-jerk, \todo{one sentence on what they look like},
+which suggests that sample-efficient search over trajectory space, rather than
+a fixed motor primitive, is what makes the problem tractable.
+\end{abstract}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{INTRODUCTION}
+
+\draft{
+Manipulating a whip confronts a controller with everything that makes
+deformable objects hard: a high-dimensional state, nonlinear wave propagation
+along the object, and extreme sensitivity of the outcome to the timing of the
+input~\cite{krotov2022whip,nah2023whip}. Yet humans learn to crack whips and
+strike targets with them, which has motivated the hypothesis that human motor
+control side-steps the complexity by composing a small number of dynamic
+primitives~\cite{hogan2012primitives,flash1985minjerk}.
+}
+
+\draft{
+Nah~\emph{et al.}~\cite{nah2023whip} tested this hypothesis in simulation. A
+4-DOF upper limb model, driven by a joint-space impedance controller, holds a
+25-node lumped-parameter whip. The arm follows a single rest-to-rest
+minimum-jerk motion in joint space, so the whole action is described by nine
+numbers: the initial posture, the final posture and the movement duration. The
+DIRECT-L global optimizer~\cite{gablonsky2001direct} found parameters that hit
+five of six targets in fewer than 250 episodes, and came within 10~cm of the
+sixth. The authors attribute this efficiency to the primitive: the search space
+is nine-dimensional instead of a trajectory space with thousands of samples.
+}
+
+\draft{
+This leaves two questions open. First, is the minimum-jerk constraint necessary
+for tractability, or merely sufficient? A richer trajectory class could reach
+targets that a single submovement cannot, provided the search remains
+sample-efficient. Second, is DIRECT-L the right tool? Each episode is an
+expensive simulation (or, on hardware, a physical trial), which is the regime
+Bayesian optimization (BO) is designed for~\cite{shahriari2016bo,frazier2018bo}.
+}
+
+\draft{
+We answer both questions with functional Bayesian optimization: BO whose
+decision variable is a function rather than a vector. The zero-torque joint
+trajectory $\vq_0(t)$ is represented as a sparse mixture of radial basis
+functions with free centers, widths and amplitudes. A Gaussian process over
+trajectories is fitted using the RKHS distance between mixtures, which has a
+closed form, and expected improvement is maximized by gradient ascent over all
+mixture parameters. The basis size grows during the run so early episodes are
+spent on coarse trajectories and later ones on refinements.
+}
+
+\noindent\textbf{Contributions.}
+\begin{itemize}
+  \item We reproduce the whip-targeting benchmark of~\cite{nah2023whip}
+  (4-DOF arm, 50-DOF whip, six targets, joint-space impedance control) as a
+  differentiable simulator and release it \todo{link at camera-ready}.
+  \item We show that functional BO hits \todo{$n$ of six} targets in
+  \todo{$k$} episodes, \todo{$x\times$} fewer than DIRECT-L on the same task.
+  \item We show that the minimum-jerk restriction is not needed: the trajectories
+  found by FBO are \todo{characterize}, and \todo{target 6 result}.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{RELATED WORK}
+
+\subsection{Whip manipulation and dynamic primitives}
+\draft{
+Krotov~\emph{et al.}~\cite{krotov2022whip} recorded humans hitting a target
+with a bullwhip and found a bell-shaped hand speed profile in both discrete and
+rhythmic styles. Nah~\emph{et al.} built on this in a series of simulation
+studies~\cite{nah2020whip,nah2021whip,nah2023whip}, culminating in the
+targeting task we adopt. Their controller is a joint-space impedance controller
+\cite{hogan1985impedance} following a minimum-jerk virtual
+trajectory~\cite{flash1985minjerk}; the primitive is fixed and only its
+parameters are optimized.
+}
+\todo{robotics co-authors: other deformable/dynamic manipulation work worth citing
+(cables, cloth, rope, ``robots of the lost arc'', iterative residual policy)}
+
+\subsection{Policy search with few trials}
+\draft{
+Parametrized motion primitives such as dynamic movement primitives
+\cite{ijspeert2013dmp} are the standard way to make policy search
+sample-efficient in robotics~\cite{kober2011policysearch,chatzilygeroudis2020survey}.
+Bayesian optimization has been used to tune gait parameters
+\cite{calandra2016gaits} and controller gains directly on hardware in tens of
+trials. In all these cases the policy class is fixed in advance and BO searches a
+low-dimensional parameter vector; we instead search the trajectory itself.
+}
+
+\subsection{Bayesian optimization over functions}
+\draft{
+Functional BO extends the surrogate from vectors to elements of a function
+space. Vien~\emph{et al.}~\cite{vien2018fbo} optimize over an RKHS with a
+kernel on function norms; Vellanki~\emph{et al.}~\cite{vellanki2019fbo} add
+shape priors; Shilton~\emph{et al.}~\cite{shilton2020fbo} discretize the
+domain on a grid. Our method \cite{ours2026fbo} searches a sparse sub-manifold
+of the RKHS by jointly optimizing basis point locations and coefficients, which
+keeps the acquisition problem low-dimensional while letting the basis adapt to
+the objective. This paper is the first application of that method to a
+physical control task with a strong published baseline.
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{THE WHIP TARGETING TASK}
+\label{sec:task}
+
+We follow the model of~\cite{nah2023whip}; parameters are listed in
+Table~\ref{tab:params}.
+
+\subsection{Arm and whip model}
+\draft{
+The upper limb is a two-link open chain with a 3-DOF shoulder (flexion/extension
+$J_1$, adduction/abduction $J_2$, lateral/medial rotation $J_3$) and a 1-DOF
+elbow ($J_4$). Segment lengths, masses and inertias follow Hatze's
+anthropometric model. The whip is a lumped-parameter chain of $N=25$ point
+masses joined by massless rods and 2-DOF universal joints, each joint carrying
+a linear rotational spring $k$ and damper $b$; the joint attaching the whip to
+the hand has $k=b=0$. The complete system has $4 + 2N = 54$ DOF.
+}
+\todo{figure: schematic of arm, whip, joint axes, and the six targets (cf.\ Fig.~1 and Fig.~11 of~\cite{nah2023whip})}
+
+\subsection{Impedance controller}
+The arm is driven by a first-order joint-space impedance controller with gravity
+compensation,
+\begin{equation}
+  \vtau = K_q\,(\vq_0 - \vq) + B_q\,(\dot\vq_0 - \dot\vq) + \vtau_G,
+  \label{eq:impedance}
+\end{equation}
+where $\vq\in\R^4$ is the measured joint configuration, $\vq_0(t)$ is the
+zero-torque (virtual) trajectory, $K_q$ is the measured human joint stiffness of
+\cite{nah2023whip} and $B_q = 0.05\,K_q$. The gravity torque $\vtau_G$
+compensates the arm links and the whip mass lumped at the hand.
+
+\subsection{Objective}
+\draft{
+An episode simulates $T=2.5$~s from rest with the whip hanging. The cost is the
+closest approach of the whip tip to the target, minus a contact radius $r$,
+\begin{equation}
+  L(\vq_0) = \max\Big(0,\; \min_{t,\,i\in\mathcal{I}_{\text{tip}}}
+  \big\|\mathbf{p}_i(t) - \mathbf{p}^{\star}\big\| - r\Big),
+  \label{eq:objective}
+\end{equation}
+where $\mathbf{p}_i(t)$ is the position of node $i$ and
+$\mathcal{I}_{\text{tip}}$ indexes the last five nodes. A hit is $L=0$.
+}
+\todo{align with the paper: they use all 25 nodes and a 3~cm target radius; we
+use the last 5 nodes and $r=5$~cm. Decide and state which, and justify (tip-only
+prevents ``cheating'' hits with the handle end).}
+
+\subsection{Targets}
+Six targets are placed on spheres around the shoulder: targets 1--3 at radius
+$R - d$ and targets 4--6 at $R$, where $R = L_1 + L_2 + N l = 2.385$~m is the
+combined reach of arm and whip and $d=0.4$~m. Azimuth/elevation are
+$(0^\circ,0^\circ)$, $(45^\circ,0^\circ)$ and $(45^\circ,45^\circ)$ in each
+group. Targets 4--6 can be reached only by the tip at full extension.
+
+\subsection{Baseline: minimum-jerk primitive with DIRECT-L}
+\draft{
+In~\cite{nah2023whip} the virtual trajectory is a single rest-to-rest
+minimum-jerk motion
+\begin{equation}
+  \vq_0(t) = \vq_{0,i} + (\vq_{0,f} - \vq_{0,i})\,
+  \big(10\,s^3 - 15\,s^4 + 6\,s^5\big),\quad s = \min(t/D, 1),
+  \label{eq:minjerk}
+\end{equation}
+with nine parameters $(\vq_{0,i}, \vq_{0,f}, D)$ optimized by DIRECT-L
+\cite{gablonsky2001direct} for at most 600 iterations, halting on the first
+hit. The reported episode counts to the first hit are 39--249 for targets 1--5;
+target 6 was not hit (closest approach 10~cm).
+}
+
+\begin{table}[t]
+\caption{Model parameters, from Table~3 of~\cite{nah2023whip}.}
+\label{tab:params}
+\centering
+\begin{tabular}{llr}
+\toprule
+Quantity & Symbol & Value \\
+\midrule
+Upper arm / forearm length & $L_1, L_2$ & 0.294, 0.291 m \\
+Upper arm / forearm mass & $M_1, M_2$ & 1.595, 0.869 kg \\
+Whip nodes & $N$ & 25 \\
+Node mass & $m$ & 0.012 kg \\
+Segment length & $l$ & 0.072 m \\
+Joint stiffness / damping & $k, b$ & 0.242 N$\cdot$m/rad, 0.092 N$\cdot$m$\cdot$s/rad \\
+Contact radius & $r$ & \todo{0.05} m \\
+Horizon / time step & $T, \Delta t$ & 2.5 s, 0.5 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{FUNCTIONAL BAYESIAN OPTIMIZATION}
+\label{sec:method}
+
+\todo{compress from the FBO paper~\cite{ours2026fbo}; keep only what a robotics
+reader needs to trust the results}
+
+\subsection{Trajectories as sparse RKHS elements}
+\draft{
+We parametrize the zero-torque trajectory through a vector-valued function
+$\vf:[0,1]\to\R^4$ of normalized time $s = t/T$,
+\begin{equation}
+  \vq_0(t) = \mathbf{c} + \mathbf{A} \odot \vf(t/T),
+  \label{eq:reference}
+\end{equation}
+where $\mathbf{c}$ and $\mathbf{A}$ center and scale each joint to its range
+of motion, so $\vf$ is dimensionless. Each output of $\vf$ is a mixture of $m$
+Gaussian radial basis functions,
+\begin{equation}
+  f_j(s) = \sum_{i=1}^{m} a_{ij}\,
+  \exp\!\Big(-\frac{(s - x_{ij})^2}{2\,\ell_{ij}^2}\Big),
+  \label{eq:mixture}
+\end{equation}
+with centers $x_{ij}\in[0,1]$, widths $\ell_{ij}$ and amplitudes
+$a_{ij}\in[-1,1]$ all free. A trajectory is therefore a point $\theta\in\R^{3mk}$
+with $k=4$, and the set of such mixtures is a sub-manifold of the RKHS $\Hs$ of
+a wider Gaussian kernel. The minimum-jerk primitive of \eqref{eq:minjerk} is not
+in this family, and conversely a single atom ($m=1$) already allows a
+non-monotone, return-to-start motion.
+}
+
+\subsection{Gaussian process over trajectories}
+\draft{
+Rather than a GP on $\theta$, which would be invariant to nothing (permuting
+atoms changes $\theta$ but not the trajectory), we place a GP on $\vf$ itself
+with a stationary kernel in RKHS distance,
+\begin{equation}
+  \kappa(\vf, \vf') = \nu\,\phi\Big(\sqrt{\textstyle\sum_j \rho_j\,
+  \|f_j - f'_j\|_{\Hs_{\ell_0}}^2}\Big),
+  \label{eq:kernel}
+\end{equation}
+where $\phi$ is a Mat\'ern-5/2 profile, $\rho_j$ weights the joints, and
+$\|\cdot\|_{\Hs_{\ell_0}}$ is the norm of the Gaussian RKHS with ambient
+lengthscale $\ell_0$. For RBF mixtures this norm has a closed form, since the
+inner product of two Gaussians in a Gaussian RKHS is again a Gaussian in their
+centers. The hyperparameters $(\ell_0, \rho, \nu)$ and a constant trend are
+fitted by marginal likelihood, warm-started between iterations.
+}
+
+\subsection{Acquisition and basis growth}
+\draft{
+We maximize (log) expected improvement~\cite{ament2023logei} by multi-start
+gradient ascent over $\theta$: candidates are drawn by Latin hypercube over
+$(\log\ell, x, a)$ and around the best observed trajectories, and the best
+$n$ starts are refined with L-BFGS. The basis size follows the schedule
+$m = 1, 2, 4, \dots$: at each stage boundary every atom is split in two with
+half amplitude, which leaves all observed trajectories unchanged while doubling
+the search dimension. Early episodes are thus spent on single-pulse motions and
+later ones on refinements.
+}
+\todo{algorithm box: initial LHS design, loop (fit GP, maximize EI, simulate, record), stage boundaries}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{EXPERIMENTS}
+\label{sec:experiments}
+
+\subsection{Protocol}
+\draft{
+For each of the six targets we run FBO with a budget of 128 episodes, of which
+the first $n_0$ form a Latin hypercube design in the $m=1$ family. We compare
+three basis schedules: fixed $m=1$ ($n_0=64$), growing to $m=2$ ($n_0=32$) and
+growing to $m=4$ ($n_0=16$); the initial design is sized so every stage
+doubles the number of observations. \todo{seeds: currently seed 0 only; run
+$\geq 5$ seeds and report median and interquartile range.} The simulator is a
+semi-implicit Euler integrator with implicit joint damping at $\Delta t = 0.5$~ms,
+matching MuJoCo's integrator~\cite{todorov2012mujoco}; \todo{report validation
+of our simulator against the published Table~1 optima (closest approach when
+replaying the paper's nine parameters).}
+}
+
+\subsection{Sample efficiency}
+\todo{Fig.: best-so-far closest approach vs.\ episode for each target, FBO
+($m=1,2,4$) against the DIRECT-L curves of Fig.~2 in~\cite{nah2023whip}; mark
+the first-hit episode.}
+
+\todo{Table: episodes to first hit per target, FBO vs.\ DIRECT-L (39, 78, 39,
+$\sim$170, 249, miss). Include final closest approach for misses.}
+
+\begin{table}[t]
+\caption{Episodes to first hit. DIRECT-L values from~\cite{nah2023whip}.}
+\label{tab:episodes}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Target & DIRECT-L & FBO $m{=}1$ & FBO $m{=}2$ & FBO $m{=}4$ \\
+\midrule
+1 & \todo{} & \todo{} & \todo{} & \todo{} \\
+2 & \todo{} & \todo{} & \todo{} & \todo{} \\
+3 & 39 & \todo{} & \todo{} & \todo{} \\
+4 & \todo{} & \todo{} & \todo{} & \todo{} \\
+5 & 249 & \todo{} & \todo{} & \todo{} \\
+6 & miss (0.10 m) & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Beyond minimum jerk}
+\todo{Fig.: learned $\vq_0(t)$ per joint for each target, overlaid on the
+paper's minimum-jerk optimum; hand path in task space. Quantify the departure
+from minimum jerk (e.g.\ number of speed peaks, jerk cost ratio).}
+
+\todo{Fig.: target 6 rollout if hit; discuss what the extra freedom buys.}
+
+\subsection{Ablations}
+\todo{choose 2--3: (i) basis schedule fixed vs.\ growing; (ii) GP on
+$\theta$ (vector BO) vs.\ GP on $\vf$ (RKHS kernel), same parametrization;
+(iii) DIRECT-L on the same RBF parametrization, to separate parametrization
+from optimizer; (iv) BO on the nine min-jerk parameters, to separate optimizer
+from primitive.}
+
+\subsection{Sensitivity}
+\todo{optional: replicate the duration-sensitivity analysis of~\cite{nah2023whip}
+on the FBO solutions; is the FBO trajectory more or less robust to timing
+perturbation?}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{DISCUSSION}
+\todo{robotics co-authors: implications for real-robot trials (episode cost,
+safety of exploratory trajectories, impedance on hardware); limitations
+(simulation only, single seed, arm model without wrist); what FBO does not
+address (sim-to-real).}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{CONCLUSION}
+\draft{
+We revisited the whip targeting benchmark of Nah~\emph{et al.} and replaced the
+fixed minimum-jerk primitive and DIRECT-L search with functional Bayesian
+optimization over the virtual trajectory. \todo{one sentence of results}. The
+result supports a different reading of the original study: what makes the task
+learnable in few trials is a search that exploits smoothness of the objective
+over trajectory space, and a fixed primitive is one way but not the only way to
+get it.
+}
+
+% ICRA: balance columns on the last page; adjust once content is final
+%\addtolength{\textheight}{-12cm}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{ACKNOWLEDGMENT}
+\todo{camera-ready only (anonymous at submission). ICRA 2027 requires
+disclosure of any AI-assisted writing, naming the system and the sections.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\bibliographystyle{ieeetr}
+\bibliography{references}
+
+\end{document}
