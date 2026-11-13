@@ -209,6 +209,11 @@ if __name__ == "__main__":
     target_fn = target_fns[args.target_fn]()
     profile = profiles_options[args.profile]
 
+    # closed loop: per-dim variance grows with d so product atoms keep their width
+    closed_loop = getattr(target_fn, "open_loop", True) is False
+    l_scale = target_fn.d if closed_loop else 1
+    l_range = (jnp.asarray(0.04 * l_scale), jnp.asarray(4.0 * l_scale))
+
     method = "adaptive" if args.fixed_l is None else f"fixed_l{args.fixed_l:g}"
     method = f"ours_{args.distance}_{method}"
     save_dir = f"{args.results_dir}/{args.target_fn}/{method}/{args.profile}"
@@ -235,6 +240,7 @@ if __name__ == "__main__":
         initial_acquisitions=args.initial_acquisitions,
         budget=args.budget,
         batch_size=args.batch_size,
+        l_range=l_range,
         fixed_l=args.fixed_l,
         distance=args.distance,
         save_path=save_path,
