@@ -83,7 +83,7 @@ class Pendulum:
         self.k = 1
         self.optimum = None
         self.periodic = (
-            jnp.zeros(1, dtype=bool) if open_loop else jnp.array([True, False])
+            (False,) if open_loop else (True, False)
         )
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
@@ -133,7 +133,7 @@ class MountainCarContinuous:
         self.d = 1 if open_loop else 2
         self.k = 1
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
         env = make_env(self.env_id, self.video_dir)
@@ -186,7 +186,7 @@ class LunarLanderContinuous:
         self.d = 1 if open_loop else 8
         self.k = 2
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -237,7 +237,7 @@ class BipedalWalker:
         self.d = 1 if open_loop else 24
         self.k = 4
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -288,7 +288,7 @@ class BipedalWalkerHardcore:
         self.d = 1 if open_loop else 24
         self.k = 4
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -342,7 +342,7 @@ class InvertedPendulum:
         self.d = 1 if open_loop else 4
         self.k = 1
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -394,9 +394,9 @@ class InvertedDoublePendulum:
         self.k = 1
         self.optimum = None
         self.periodic = (
-            jnp.zeros(1, dtype=bool)
+            (False,)
             if open_loop
-            else jnp.array([False, True, True, False, False, False, False])
+            else (False, True, True, False, False, False, False)
         )
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
@@ -455,9 +455,9 @@ class Reacher:
         self.k = 2
         self.optimum = None
         self.periodic = (
-            jnp.zeros(1, dtype=bool)
+            (False,)
             if open_loop
-            else jnp.array([True, True] + [False] * 6)
+            else (True, True) + (False,) * 6
         )
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
@@ -517,7 +517,7 @@ class Swimmer:
         self.d = 1 if open_loop else 8
         self.k = 2
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -567,7 +567,7 @@ class Hopper:
         self.d = 1 if open_loop else 11
         self.k = 3
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -617,7 +617,7 @@ class Walker2d:
         self.d = 1 if open_loop else 17
         self.k = 6
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -667,7 +667,7 @@ class HalfCheetah:
         self.d = 1 if open_loop else 17
         self.k = 6
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -718,7 +718,7 @@ class Pusher:
         self.d = 1 if open_loop else 23
         self.k = 7
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -769,7 +769,7 @@ class Ant:
         self.d = 1 if open_loop else 105
         self.k = 8
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -820,7 +820,7 @@ class Humanoid:
         self.d = 1 if open_loop else 348
         self.k = 17
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )
@@ -871,7 +871,7 @@ class HumanoidStandup:
         self.d = 1 if open_loop else 348
         self.k = 17
         self.optimum = None
-        self.periodic = jnp.zeros(self.d, dtype=bool)
+        self.periodic = (False,) * self.d
         self.obs_mean, self.obs_std = observation_statistics(
             self.env_id, n_calibration_rollouts
         )

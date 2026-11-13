@@ -1,5 +1,5 @@
 from typing import NamedTuple, Optional
-from jaxtyping import Array, Bool, Float, Key, Scalar
+from jaxtyping import Array, Float, Key, Scalar
 
 import jax
 import jax.numpy as jnp
@@ -45,12 +45,12 @@ def loglikelihood(
     return -0.5 * (n * jnp.log(nu) + logdetK)
 
 
-@jax.jit
+@eqx.filter_jit
 def pairwise_squared_distance(
     l0: Float[Array, "d"] | None,
     f1: rkhs.RBFMixture["n1 o m d"],
     f2: Optional[rkhs.RBFMixture["n2 o m d"]] = None,
-    periodic: Optional[Bool[Array, "d"]] = None,
+    periodic: tuple[bool, ...] | None = None,
 ) -> Float[Array, "n1 n2 o"]:
     """Squared distances between two sets of functions, per output.
     Distances live in the rkhs of ambient lengthscale l0, in L2 on the box if l0 is None.
@@ -74,7 +74,7 @@ class GaussianProcess(NamedTuple):
 
     profile: kernels.Profile  # kernel profile, e.g. RBF or Matern
     l0: Float[Array, "d"] | None  # ambient lengthscale, None for L2
-    periodic: Bool[Array, "d"] | None  # dimensions that wrap, None for none
+    periodic: tuple[bool, ...] | None  # dimensions that wrap, static; None for none
 
     # fitted parameters
     rho: Float[Array, "o"]  # weight output dimensions
@@ -100,7 +100,7 @@ class GaussianProcess(NamedTuple):
         *,
         profile: kernels.Profile = kernels.matern52,
         l0: Optional[Float[Array, "d"]] = None,
-        periodic: Optional[Bool[Array, "d"]] = None,
+        periodic: tuple[bool, ...] | None = None,
         rho_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
         nugget_range: Float[Array, "2"] = jnp.array([1e-4, 1e0]),
         restarts: int = 1,

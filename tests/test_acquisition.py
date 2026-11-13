@@ -129,7 +129,7 @@ def test_optimize_returns_valid_candidate():
 
 
 def test_optimize_with_mixed_constraints():
-    periodic = jnp.array([True, False])
+    periodic = (True, False)
     fs = sample_functions(jr.key(0), (8, 2, 3, 2))
     ys = jr.normal(jr.key(1), (8,))
     l0 = jnp.full(2, L_RANGE[0])
