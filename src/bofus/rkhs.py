@@ -1,111 +1,129 @@
-from typing import NamedTuple, Self
-from jaxtyping import Array, Float, Scalar
+from types import GenericAlias
+from typing import NamedTuple, Optional, Self
+from jaxtyping import Array, Bool, Float
 
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
-import equinox as eqx
+from jax.scipy.special import erf
 
-from . import kernels
+from . import utils
 
-jax.config.update("jax_enable_x64", True)
-EPS = float(jnp.sqrt(jnp.finfo(float).eps))
+X_MAX = 1.0  # domain is [-X_MAX, X_MAX]^d, periodic dimensions wrap
 
 
-class RKHS(NamedTuple):
-    """Separable kernel over m independent outputs: K(x, x') = profile(metric(x, x')) I."""
+class RBFMixture(NamedTuple):
+    """RBF mixture f = sum_i a_i prod_j phi(x_j - x_ij; l_ij)."""
 
-    metric: kernels.Metric
-    profile: kernels.Profile
-    rho: Float[Array, "d"]
-    m: int = 1  # number of outputs
+    l: Float[Array, "*b m d"]
+    x: Float[Array, "*b m d"]
+    a: Float[Array, "*b m"]
 
-    @property
-    def d(self) -> int:
-        return len(self.rho)
+    @classmethod
+    def __class_getitem__(cls, shape: str) -> GenericAlias:
+        """Shape annotation RBFMixture["*b m d"], documentation only."""
+        return GenericAlias(cls, shape)
 
-    @eqx.filter_jit
+    @jax.jit
     def __call__(
         self,
-        xs1: Float[Array, "n d"],
-        xs2: Float[Array, "m d"],
-    ) -> Float[Array, "n m"]:
-        return self.profile(self.metric(self.rho, xs1, xs2))
+        x: Float[Array, "d"],
+        periodic: Optional[Bool[Array, "d"]] = None,
+    ) -> Float[Array, "*b"]:
+        """Evaluate f at a single point x, vmap for more. Periodic dimensions wrap."""
+        delta = x - self.x
+        rbfs = jnp.where(
+            False if periodic is None else periodic,
+            periodic_rbf(self.l, delta),
+            jnp.exp(-0.5 * delta**2 / self.l),
+        )
+        return jnp.sum(self.a * jnp.prod(rbfs, axis=-1), axis=-1)
+
+    def pad_to(self, m: int) -> Self:
+        """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
+        *b, m0, d = self.l.shape
+        pad = (*b, m - m0, d)
+        l = jnp.concat([self.l, jnp.full(pad, (2 * X_MAX) ** 2)], axis=-2)
+        x = jnp.concat([self.x, jnp.zeros(pad)], axis=-2)
+        a = jnp.concat([self.a, jnp.zeros((*b, m - m0))], axis=-1)
+        return self._replace(l=l, x=x, a=a)
 
 
-class Function(NamedTuple):
-    kernel: RKHS
-    x: Float[Array, "k d"]  # basis points
-    a: Float[Array, "k m"]  # coefficients, one row per basis point
+def periodic_rbf(
+    l: Float[Array, "..."],
+    x: Float[Array, "..."],
+    expansion_terms: int = 4,
+) -> Float[Array, "..."]:
+    """Repeated rbf functions exp(-0.5 * x^2 / l) with period 2 X_MAX.
+    Choses the evaluation path such that the error is below ~exp(-pi (terms + 1/2)^2).
+    """
+    # angle in [-pi, pi] and angular variance on the circle
+    theta = jnp.pi * x / X_MAX
+    theta = theta - 2 * jnp.pi * jnp.round(theta / (2 * jnp.pi))
+    s = (jnp.pi / X_MAX) ** 2 * l
+    n = jnp.arange(-expansion_terms, expansion_terms + 1, dtype=x.dtype)
 
-    @eqx.filter_jit
-    def __call__(self, t: Float[Array, "d"]) -> Float[Array, "m"]:
-        Ktx = self.kernel(t[None, :], self.x)
-        return (Ktx @ self.a).squeeze()
+    # narrow atoms: nearest images, error ~exp(-2 pi^2 (terms + 1/2)^2 / s)
+    images = jnp.exp(-0.5 * (theta[..., None] + 2 * jnp.pi * n) ** 2 / s[..., None])
+    images = images.sum(axis=-1)
 
-    @classmethod
-    def from_array(
-        cls,
-        rkhs: RKHS,
-        p: Float[Array, "k d+m"],
-        x_range: tuple[float, float] = (0.0, 1.0),
-        y_range: tuple[float, float] = (-1.0, 1.0),
-        eps: float = 0.01,
-    ) -> Self:
-        x, y = p[:, : rkhs.d], p[:, rkhs.d :]
-        x = x * (x_range[1] - x_range[0]) + x_range[0]  # [0,1]->x_range
-        y = y * (y_range[1] - y_range[0]) + y_range[0]  # [0,1]->y_range
-        return cls.from_xy(rkhs, x, y, eps)
+    # wide atoms: Poisson dual Fourier series, error ~exp(-(terms + 1)^2 s / 2)
+    harmonics = jnp.exp(-0.5 * n**2 * s[..., None]) * jnp.cos(n * theta[..., None])
+    harmonics = jnp.sqrt(s / (2 * jnp.pi)) * harmonics.sum(axis=-1)
 
-    @classmethod
-    def from_xy(
-        cls,
-        rkhs: RKHS,
-        x: Float[Array, "k d"],
-        y: Float[Array, "k m"],
-        eps: float = 0.01,
-    ) -> Self:
-        Kxx = rkhs(x, x) + eps * jnp.eye(len(x))
-        a = jnp.linalg.solve(Kxx, y.reshape(len(x), -1))
-        return cls(kernel=rkhs, a=a, x=x)
+    return jnp.where(s < 2 * jnp.pi, images, harmonics)
 
 
-@eqx.filter_jit
-def inner_product(f1: Function, f2: Function) -> Scalar:
-    """RKHS inner product, summed over the independent outputs."""
-    Kxx = f1.kernel(f1.x, f2.x)
-    return jnp.einsum("kl,ki,li->", Kxx, f1.a, f2.a)
+@jax.jit
+def inner(
+    f1: RBFMixture["*b m1 d"],
+    f2: RBFMixture["*b m2 d"],
+    l0: Optional[Float[Array, "d"]] = None,
+    periodic: Optional[Bool[Array, "d"]] = None,
+) -> Float[Array, "*b"]:
+    """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
+    RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
+    See Steinwart, Hush, Scovel 2006, https://doi.org/10.1109/TIT.2006.881713
+    The L2 inner product is scaled by 1 / sqrt(2 pi) per dimension.
+    """
+    # atom pairs on (*b, m, n, d)
+    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
+    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
+    periodic = False if periodic is None else periodic
+
+    if l0 is None:  # L2 inner product, scaled by 1 / sqrt(2 pi)^d
+        # box dimensions keep only the mass of each atom product N(mu, s) inside [-X_MAX, X_MAX]
+        ls = l1 + l2
+        mu = (l2 * x1 + l1 * x2) / ls
+        root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
+        mass = 0.5 * (erf((X_MAX - mu) / root_2s) - erf((-X_MAX - mu) / root_2s))
+        scale = jnp.sqrt(l1 * l2 / ls) * jnp.where(periodic, 1.0, mass)
+        valid = True
+    else:
+        # deconvolved atom variances, patched where an atom does not fit the ambient rkhs
+        v1 = l1 - l0 / 2
+        v2 = l2 - l0 / 2
+        valid = jnp.all((v1 > 0.0) & (v2 > 0.0), axis=(-3, -2, -1))
+        ls = jnp.where(v1 > 0.0, v1, 1.0) + jnp.where(v2 > 0.0, v2, 1.0)
+        scale = jnp.sqrt(l1 * l2 / (l0 * ls))
+
+    # inner kernel matrix, infinite if any atom falls outside the ambient rkhs
+    line = jnp.exp(-0.5 * (x1 - x2) ** 2 / ls)
+    circle = periodic_rbf(ls, x1 - x2)
+    K = jnp.prod(scale * jnp.where(periodic, circle, line), axis=-1)
+    k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
+    return jnp.where(valid, k, jnp.inf)
 
 
-class BernsteinPolynomial(NamedTuple):
-    c: Float[Array, "n+1"]
-
-    @property
-    def degree(self) -> int:
-        return self.c.shape[-1] - 1
-
-    @classmethod
-    def from_array(
-        cls, p: Float[Array, "n+1"], c_range: tuple[float, float] = (-1.0, 1.0)
-    ) -> Self:
-        c = p * (c_range[1] - c_range[0]) + c_range[0]  # [0,1]->c_range
-        return cls(c=jnp.asarray(c))
-
-    @eqx.filter_jit
-    def __call__(self, x: Float[Array, "... 1"]) -> Float[Array, "..."]:
-        n = self.degree
-        x = jax.nn.sigmoid(4 * (x - 0.5))  # soft squish to [0,1]
-        g = jsp.stats.binom.pmf(jnp.arange(n + 1), n, x)
-        return jnp.sum(self.c * g, axis=-1)
-
-    @eqx.filter_jit
-    def as_degree(self, n: int) -> Self:
-        assert n >= self.degree, "Can only bump degree up"
-        while self.degree < n:
-            # express degree n berstein polynomial as degree n+1 berstein polynomial
-            i = jnp.arange(self.degree + 2) / (self.degree + 1)
-            c_new = jnp.zeros((*self.c.shape[:-1], self.degree + 2))
-            c_new = c_new.at[..., 1:].add(i[1:] * self.c)
-            c_new = c_new.at[..., :-1].add((1 - i[:-1]) * self.c)
-            self = self._replace(c=c_new)
-        return self
+@jax.jit
+def distance(
+    f1: RBFMixture["*b m1 d"],
+    f2: RBFMixture["*b m2 d"],
+    l0: Optional[Float[Array, "d"]] = None,
+    periodic: Optional[Bool[Array, "d"]] = None,
+) -> Float[Array, "*b"]:
+    """Distance between RBF mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
+    norms = inner(f1, f1, l0, periodic) + inner(f2, f2, l0, periodic)
+    d2 = norms - 2.0 * inner(f1, f2, l0, periodic)
+    is_undefined = jnp.isinf(d2) | jnp.isnan(d2)  # inf - inf gives nan
+    d2 = jnp.where(is_undefined, jnp.inf, d2)
+    return utils.safe_sqrt(d2)
