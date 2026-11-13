@@ -123,7 +123,7 @@ def test_distance_matches_norm_of_pointwise_difference():
     assert rkhs.distance(f1, f2, l0) ** 2 == pytest.approx(d2, rel=1e-5)
 
 
-MIXED = jnp.array([True, False])
+MIXED = (True, False)
 
 
 def test_periodic_inputs_wrap():
