@@ -3,20 +3,40 @@
 *.pkl
 *.parquet
 *.csv
+*.pdf
+!latex/**/*.pdf
 *.txt
 *tar.gz
 
 # Ignore run outputs (results may be a symlink, so no trailing slash)
 results
+results_converted/
 plots/
-
-# Ignore logs
-logs/
+sweep.log
+sweep_*.log
 *.out
-.slurm-logs/
+
+# Ignore sweep bookkeeping
+.sweep_inflight/
+.sweep_manifests*/
+.summary_cache/
+seed_report.html
+time_report.html
 
 # Ignore jax compilation cache
 .jaxcache/
+
+# Ignore profiling scratch
+profiles/*_out/
+profiles/repro_*/
+profiles/control_*/
+
+# Ignore agent scratch
+CLAUDE.md
+.claude/
+
+# Ignore logs
+logs/
 
 # Ignore ./data
 data/
@@ -228,13 +248,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-
-# sweep artifacts
-.summary_cache/
-.sweep_manifests*/
-sweep_*.log
-seed_report.html
-time_report.html
-
-# local artifacts
+MUJOCO_LOG.TXT
+.slurm-logs/
 outputs/
