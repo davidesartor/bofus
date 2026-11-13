@@ -1,8 +1,10 @@
-import sys
+import warnings
 
-from . import kernels, rkhs
+import jax
 
-# result pickles written before the package move name their classes under src.*
-sys.modules.setdefault("src", sys.modules[__name__])
-sys.modules.setdefault("src.kernels", kernels)
-sys.modules.setdefault("src.rkhs", rkhs)
+if not jax.config.jax_enable_x64:
+    warnings.warn(
+        "GP math is likely to fail in float32: enable float64 before importing bofus with "
+        'jax.config.update("jax_enable_x64", True)',
+        stacklevel=2,
+    )
