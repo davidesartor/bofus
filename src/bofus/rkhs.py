@@ -1,8 +1,10 @@
 from types import GenericAlias
 from typing import NamedTuple, Optional, Self
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Float
 
+import numpy as np
 import jax
+import equinox as eqx
 import jax.numpy as jnp
 from jax.scipy.special import erf
 
@@ -23,20 +25,14 @@ class RBFMixture(NamedTuple):
         """Shape annotation RBFMixture["*b m d"], documentation only."""
         return GenericAlias(cls, shape)
 
-    @jax.jit
+    @eqx.filter_jit
     def __call__(
         self,
         x: Float[Array, "d"],
-        periodic: Optional[Bool[Array, "d"]] = None,
+        periodic: tuple[bool, ...] | None = None,
     ) -> Float[Array, "*b"]:
         """Evaluate f at a single point x, vmap for more. Periodic dimensions wrap."""
-        delta = x - self.x
-        rbfs = jnp.where(
-            False if periodic is None else periodic,
-            periodic_rbf(self.l, delta),
-            jnp.exp(-0.5 * delta**2 / self.l),
-        )
-        return jnp.sum(self.a * jnp.prod(rbfs, axis=-1), axis=-1)
+        return jnp.sum(self.a * rbf(x - self.x, self.l, periodic), axis=-1)
 
     def pad_to(self, m: int) -> Self:
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
@@ -48,14 +44,23 @@ class RBFMixture(NamedTuple):
         return self._replace(l=l, x=x, a=a)
 
 
-def periodic_rbf(
-    l: Float[Array, "..."],
-    x: Float[Array, "..."],
+def rbf(
+    x: Float[Array, "... d"],
+    l: Float[Array, "... d"],
+    periodic: tuple[bool, ...] | None = None,
     expansion_terms: int = 4,
 ) -> Float[Array, "..."]:
-    """Repeated rbf functions exp(-0.5 * x^2 / l) with period 2 X_MAX.
-    Choses the evaluation path such that the error is below ~exp(-pi (terms + 1/2)^2).
+    """Product rbf prod_j exp(-0.5 * x_j^2 / l_j), repeated with period 2 X_MAX on periodic dims.
+    Choses the periodic evaluation path such that the error is below ~exp(-pi (terms + 1/2)^2).
     """
+    if periodic is None or not any(periodic):
+        return jnp.prod(jnp.exp(-0.5 * x**2 / l), axis=-1)
+
+    # only the dimensions that wrap pay for the periodic series
+    wraps = np.asarray(periodic)
+    line = jnp.prod(jnp.exp(-0.5 * x[..., ~wraps] ** 2 / l[..., ~wraps]), axis=-1)
+    l, x = l[..., wraps], x[..., wraps]
+
     # angle in [-pi, pi] and angular variance on the circle
     theta = jnp.pi * x / X_MAX
     theta = theta - 2 * jnp.pi * jnp.round(theta / (2 * jnp.pi))
@@ -70,15 +75,16 @@ def periodic_rbf(
     harmonics = jnp.exp(-0.5 * n**2 * s[..., None]) * jnp.cos(n * theta[..., None])
     harmonics = jnp.sqrt(s / (2 * jnp.pi)) * harmonics.sum(axis=-1)
 
-    return jnp.where(s < 2 * jnp.pi, images, harmonics)
+    circle = jnp.where(s < 2 * jnp.pi, images, harmonics)
+    return line * jnp.prod(circle, axis=-1)
 
 
-@jax.jit
+@eqx.filter_jit
 def inner(
     f1: RBFMixture["*b m1 d"],
     f2: RBFMixture["*b m2 d"],
     l0: Optional[Float[Array, "d"]] = None,
-    periodic: Optional[Bool[Array, "d"]] = None,
+    periodic: tuple[bool, ...] | None = None,
 ) -> Float[Array, "*b"]:
     """Inner product in the rkhs of phi(.; l0) on [-X_MAX, X_MAX]^d, in L2 if l0 is None.
     RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
@@ -88,7 +94,7 @@ def inner(
     # atom pairs on (*b, m, n, d)
     l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
     l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
-    periodic = False if periodic is None else periodic
+    wraps = np.zeros(f1.x.shape[-1], bool) if periodic is None else np.asarray(periodic)
 
     if l0 is None:  # L2 inner product, scaled by 1 / sqrt(2 pi)^d
         # box dimensions keep only the mass of each atom product N(mu, s) inside [-X_MAX, X_MAX]
@@ -96,7 +102,7 @@ def inner(
         mu = (l2 * x1 + l1 * x2) / ls
         root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
         mass = 0.5 * (erf((X_MAX - mu) / root_2s) - erf((-X_MAX - mu) / root_2s))
-        scale = jnp.sqrt(l1 * l2 / ls) * jnp.where(periodic, 1.0, mass)
+        scale = jnp.sqrt(l1 * l2 / ls) * jnp.where(wraps, 1.0, mass)
         valid = True
     else:
         # deconvolved atom variances, patched where an atom does not fit the ambient rkhs
@@ -107,19 +113,17 @@ def inner(
         scale = jnp.sqrt(l1 * l2 / (l0 * ls))
 
     # inner kernel matrix, infinite if any atom falls outside the ambient rkhs
-    line = jnp.exp(-0.5 * (x1 - x2) ** 2 / ls)
-    circle = periodic_rbf(ls, x1 - x2)
-    K = jnp.prod(scale * jnp.where(periodic, circle, line), axis=-1)
+    K = jnp.prod(scale, axis=-1) * rbf(x1 - x2, ls, periodic)
     k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
     return jnp.where(valid, k, jnp.inf)
 
 
-@jax.jit
+@eqx.filter_jit
 def distance(
     f1: RBFMixture["*b m1 d"],
     f2: RBFMixture["*b m2 d"],
     l0: Optional[Float[Array, "d"]] = None,
-    periodic: Optional[Bool[Array, "d"]] = None,
+    periodic: tuple[bool, ...] | None = None,
 ) -> Float[Array, "*b"]:
     """Distance between RBF mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
     norms = inner(f1, f1, l0, periodic) + inner(f2, f2, l0, periodic)
