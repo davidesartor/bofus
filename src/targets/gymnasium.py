@@ -7,6 +7,26 @@ import numpy as np
 import jax.numpy as jnp
 import gymnasium as gym
 
+# episode lengths in steps, long enough for the task to be solvable (seconds at each env's dt)
+HORIZONS = {
+    "Pendulum-v1": 200,  # 10 s: swing up, then hold
+    "MountainCarContinuous-v0": 250,  # 8 s: a good policy reaches the flag in 2-4 s
+    "LunarLanderContinuous-v3": 400,  # 8 s: a controlled landing
+    "BipedalWalker-v3": 500,  # 10 s: about ten strides
+    "BipedalWalkerHardcore-v3": 500,  # 10 s
+    "InvertedPendulum-v5": 200,  # 8 s: uncontrolled, it falls within a second
+    "InvertedDoublePendulum-v5": 200,  # 10 s
+    "Reacher-v5": 50,  # 1 s
+    "Swimmer-v5": 300,  # 12 s: several strokes
+    "Hopper-v5": 500,  # 4 s: about ten hops
+    "Walker2d-v5": 500,  # 4 s: several strides
+    "HalfCheetah-v5": 200,  # 10 s: gait period 0.3-0.5 s
+    "Pusher-v5": 100,  # 5 s
+    "Ant-v5": 200,  # 10 s
+    "Humanoid-v5": 300,  # 4.5 s: a few strides before a fall would show
+    "HumanoidStandup-v5": 600,  # 9 s: getting up takes several seconds
+}
+
 # observations reduced to joint positions and velocities, dropping contact and inertia terms
 HUMANOID_POSITIONS_VELOCITIES = dict(
     include_cinert_in_observation=False,
@@ -20,15 +40,104 @@ OBSERVATION_KWARGS = {
     "HumanoidStandup-v5": HUMANOID_POSITIONS_VELOCITIES,
 }
 
+# full-horizon episodes: a fall ending the episode would make the return jump with the policy
+TERMINATION_KWARGS = {
+    env_id: dict(terminate_when_unhealthy=False)
+    for env_id in ("Hopper-v5", "Walker2d-v5", "Ant-v5", "Humanoid-v5")
+}
+
+
+def gym_make(env_id: str, **kwargs) -> gym.Env:
+    """gym.make with the task's horizon, observation and termination settings."""
+    return gym.make(
+        env_id,
+        max_episode_steps=HORIZONS[env_id],
+        **OBSERVATION_KWARGS.get(env_id, {}),
+        **TERMINATION_KWARGS.get(env_id, {}),
+        **kwargs,
+    )
+
+
+class VideoRecorder(gym.Wrapper):
+    """Pipe every other frame, at a third of the resolution, straight into one H.264 mp4 per episode (VS Code's preview plays no webm)."""
+
+    def __init__(
+        self, env: gym.Env, video_dir: str, frame_stride: int = 2, pixel_stride: int = 3
+    ):
+        super().__init__(env)
+        self.video_dir = video_dir
+        self.frame_stride, self.pixel_stride = frame_stride, pixel_stride
+        self.writer, self.episode, self.step_count = None, 0, 0
+
+    def reset(self, **kwargs):
+        self.close_writer()
+        out = self.env.reset(**kwargs)
+        self.step_count = 0
+        self.capture()
+        return out
+
+    def step(self, action):
+        out = self.env.step(action)
+        self.step_count += 1
+        if self.step_count % self.frame_stride == 0:
+            self.capture()
+        return out
+
+    def capture(self):
+        frame = np.ascontiguousarray(
+            self.env.render()[:: self.pixel_stride, :: self.pixel_stride]
+        )
+        if self.writer is None:
+            import imageio_ffmpeg
+
+            height, width, _ = frame.shape
+            self.writer = imageio_ffmpeg.write_frames(
+                f"{self.video_dir}/episode_{self.episode}.mp4",
+                (width, height),
+                fps=self.env.metadata.get("render_fps", 30) / self.frame_stride,
+                codec="libx264",
+                quality=None,
+                pix_fmt_out="yuv420p",
+                macro_block_size=2,
+                ffmpeg_log_level="error",
+                output_params=[
+                    "-crf",
+                    "30",
+                    "-preset",
+                    "veryfast",
+                    "-movflags",
+                    "+faststart",
+                    "-an",
+                ],
+            )
+            self.writer.send(None)
+        self.writer.send(frame)
+
+    def close_writer(self):
+        if self.writer is not None:
+            self.writer.close()
+            self.writer, self.episode = None, self.episode + 1
+
+    def close(self):
+        self.close_writer()
+        super().close()
+
 
 def make_env(env_id: str, video_dir: str | None) -> gym.Env:
     """Env, wrapped to record every episode to video_dir when given."""
     if video_dir is None:
-        return gym.make(env_id, **OBSERVATION_KWARGS.get(env_id, {}))
-    env = gym.make(
-        env_id, render_mode="rgb_array", **OBSERVATION_KWARGS.get(env_id, {})
-    )
-    return gym.wrappers.RecordVideo(env, video_dir, episode_trigger=lambda _: True)
+        return gym_make(env_id)
+    env = gym_make(env_id, render_mode="rgb_array")
+
+    # gymnasium 1.4 swaps the model's tracking camera for a static free one unless named
+    renderer = getattr(env.unwrapped, "mujoco_renderer", None)
+    if renderer is not None:
+        import mujoco
+
+        track = mujoco.mj_name2id(renderer.model, mujoco.mjtObj.mjOBJ_CAMERA, "track")
+        if track != -1:
+            renderer.camera_id = track
+    return VideoRecorder(env, video_dir)
 
 
 def normalized_time(step: int, horizon: int) -> Float[Array, "1"]:
@@ -62,7 +171,7 @@ class Pendulum:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -108,7 +217,7 @@ class Pendulum:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class MountainCarContinuous:
@@ -118,7 +227,7 @@ class MountainCarContinuous:
     """
 
     def __init__(
-        self, n_rollouts: int = 5, open_loop: bool = False, video_dir: str | None = None
+        self, n_rollouts: int = 1, open_loop: bool = False, video_dir: str | None = None
     ):
         self.env_id = "MountainCarContinuous-v0"
         self.n_rollouts = n_rollouts
@@ -157,7 +266,7 @@ class MountainCarContinuous:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 # Box2D
@@ -172,7 +281,7 @@ class LunarLanderContinuous:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one terrain and initial push for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -219,7 +328,7 @@ class LunarLanderContinuous:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class BipedalWalker:
@@ -231,7 +340,7 @@ class BipedalWalker:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one terrain for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -285,7 +394,7 @@ class BipedalWalker:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class BipedalWalkerHardcore:
@@ -297,7 +406,7 @@ class BipedalWalkerHardcore:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one obstacle course for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -351,7 +460,7 @@ class BipedalWalkerHardcore:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 # MuJoCo
@@ -366,7 +475,7 @@ class InvertedPendulum:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -409,7 +518,7 @@ class InvertedPendulum:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class InvertedDoublePendulum:
@@ -420,7 +529,7 @@ class InvertedDoublePendulum:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -472,7 +581,7 @@ class InvertedDoublePendulum:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Reacher:
@@ -484,7 +593,7 @@ class Reacher:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one target placement for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -538,7 +647,7 @@ class Reacher:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Swimmer:
@@ -550,7 +659,7 @@ class Swimmer:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -597,7 +706,7 @@ class Swimmer:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Hopper:
@@ -608,7 +717,7 @@ class Hopper:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -657,7 +766,7 @@ class Hopper:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Walker2d:
@@ -668,7 +777,7 @@ class Walker2d:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -720,7 +829,7 @@ class Walker2d:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class HalfCheetah:
@@ -731,7 +840,7 @@ class HalfCheetah:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -786,7 +895,7 @@ class HalfCheetah:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Pusher:
@@ -797,7 +906,7 @@ class Pusher:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one object placement for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -856,7 +965,7 @@ class Pusher:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Ant:
@@ -867,7 +976,7 @@ class Ant:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -921,7 +1030,7 @@ class Ant:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class Humanoid:
@@ -932,7 +1041,7 @@ class Humanoid:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -1002,7 +1111,7 @@ class Humanoid:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 class HumanoidStandup:
@@ -1013,7 +1122,7 @@ class HumanoidStandup:
 
     def __init__(
         self,
-        n_rollouts: int = 5,
+        n_rollouts: int = 1,  # one start state for now
         open_loop: bool = False,
         video_dir: str | None = None,
     ):
@@ -1083,7 +1192,7 @@ class HumanoidStandup:
                 step += 1
             returns.append(total)
         env.close()
-        return -jnp.mean(jnp.array(returns))
+        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
 
 
 ENVS = {
