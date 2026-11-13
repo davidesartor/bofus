@@ -32,7 +32,7 @@ class RBFMixture(NamedTuple):
         periodic: tuple[bool, ...] | None = None,
     ) -> Float[Array, "*b"]:
         """Evaluate f at a single point x, vmap for more. Periodic dimensions wrap."""
-        return jnp.sum(self.a * rbf(x - self.x, self.l, periodic), axis=-1)
+        return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)), axis=-1)
 
     def pad_to(self, m: int) -> Self:
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
@@ -44,39 +44,41 @@ class RBFMixture(NamedTuple):
         return self._replace(l=l, x=x, a=a)
 
 
-def rbf(
+def log_rbf(
     x: Float[Array, "... d"],
     l: Float[Array, "... d"],
     periodic: tuple[bool, ...] | None = None,
     expansion_terms: int = 4,
 ) -> Float[Array, "..."]:
-    """Product rbf prod_j exp(-0.5 * x_j^2 / l_j), repeated with period 2 X_MAX on periodic dims.
+    """log prod_j exp(-0.5 * x_j^2 / l_j), repeated with period 2 X_MAX on periodic dims.
     Choses the periodic evaluation path such that the error is below ~exp(-pi (terms + 1/2)^2).
     """
     if periodic is None or not any(periodic):
-        return jnp.prod(jnp.exp(-0.5 * x**2 / l), axis=-1)
+        return -0.5 * jnp.sum(x**2 / l, axis=-1)
 
     # only the dimensions that wrap pay for the periodic series
     wraps = np.asarray(periodic)
-    line = jnp.prod(jnp.exp(-0.5 * x[..., ~wraps] ** 2 / l[..., ~wraps]), axis=-1)
+    line = -0.5 * jnp.sum(x[..., ~wraps] ** 2 / l[..., ~wraps], axis=-1)
     l, x = l[..., wraps], x[..., wraps]
 
-    # angle in [-pi, pi] and angular variance on the circle
+    # angle in [-pi, pi] and angular variance on the circle, each path sanitized for the other
     theta = jnp.pi * x / X_MAX
     theta = theta - 2 * jnp.pi * jnp.round(theta / (2 * jnp.pi))
     s = (jnp.pi / X_MAX) ** 2 * l
+    narrow = s < 2 * jnp.pi
+    s_images, s_harmonics = jnp.where(narrow, s, 1.0), jnp.where(narrow, 2 * jnp.pi, s)
     n = jnp.arange(-expansion_terms, expansion_terms + 1, dtype=x.dtype)
 
     # narrow atoms: nearest images, error ~exp(-2 pi^2 (terms + 1/2)^2 / s)
-    images = jnp.exp(-0.5 * (theta[..., None] + 2 * jnp.pi * n) ** 2 / s[..., None])
-    images = images.sum(axis=-1)
+    images = -0.5 * (theta[..., None] + 2 * jnp.pi * n) ** 2 / s_images[..., None]
+    images = jax.nn.logsumexp(images, axis=-1)
 
     # wide atoms: Poisson dual Fourier series, error ~exp(-(terms + 1)^2 s / 2)
-    harmonics = jnp.exp(-0.5 * n**2 * s[..., None]) * jnp.cos(n * theta[..., None])
-    harmonics = jnp.sqrt(s / (2 * jnp.pi)) * harmonics.sum(axis=-1)
+    harmonics = jnp.exp(-0.5 * n**2 * s_harmonics[..., None]) * jnp.cos(n * theta[..., None])
+    harmonics = 0.5 * jnp.log(s_harmonics / (2 * jnp.pi)) + jnp.log(harmonics.sum(axis=-1))
 
-    circle = jnp.where(s < 2 * jnp.pi, images, harmonics)
-    return line * jnp.prod(circle, axis=-1)
+    circle = jnp.where(narrow, images, harmonics)
+    return line + jnp.sum(circle, axis=-1)
 
 
 @eqx.filter_jit
@@ -102,7 +104,8 @@ def inner(
         mu = (l2 * x1 + l1 * x2) / ls
         root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
         mass = 0.5 * (erf((X_MAX - mu) / root_2s) - erf((-X_MAX - mu) / root_2s))
-        scale = jnp.sqrt(l1 * l2 / ls) * jnp.where(wraps, 1.0, mass)
+        mass = jnp.maximum(mass, jnp.finfo(mass.dtype).tiny)  # finite log for atoms off the box
+        log_scale = 0.5 * jnp.log(l1 * l2 / ls) + jnp.where(wraps, 0.0, jnp.log(mass))
         valid = True
     else:
         # deconvolved atom variances, patched where an atom does not fit the ambient rkhs
@@ -110,10 +113,10 @@ def inner(
         v2 = l2 - l0 / 2
         valid = jnp.all((v1 > 0.0) & (v2 > 0.0), axis=(-3, -2, -1))
         ls = jnp.where(v1 > 0.0, v1, 1.0) + jnp.where(v2 > 0.0, v2, 1.0)
-        scale = jnp.sqrt(l1 * l2 / (l0 * ls))
+        log_scale = 0.5 * jnp.log(l1 * l2 / (l0 * ls))
 
     # inner kernel matrix, infinite if any atom falls outside the ambient rkhs
-    K = jnp.prod(scale, axis=-1) * rbf(x1 - x2, ls, periodic)
+    K = jnp.exp(jnp.sum(log_scale, axis=-1) + log_rbf(x1 - x2, ls, periodic))
     k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
     return jnp.where(valid, k, jnp.inf)
 
