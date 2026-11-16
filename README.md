@@ -30,6 +30,12 @@ The code, baselines and sweep that reproduce the paper live at tag [`neurips-202
 uv sync
 ```
 
+To use the `bofus` library in another project (core dependencies only; `targets` and scripts are not shipped):
+
+```bash
+uv add "bofus @ git+https://github.com/davidesartor/BOFUS@adapt_rho"
+```
+
 ## Running
 
 ```bash
