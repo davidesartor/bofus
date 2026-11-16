@@ -41,12 +41,17 @@ def factorize(
 def loglikelihood(
     K: Float[Array, "n n"],
     y: Float[Array, "n"],
+    nu: Scalar | None = None,
 ) -> Scalar:
-    """Marginal likelihood with the trend and scale concentrated out."""
-    K_chol, _, _, _, nu = factorize(K, y)
+    """Marginal likelihood with the trend concentrated out, and the scale nu too unless given."""
+    K_chol, _, _, _, nu_hat = factorize(K, y)
     n = jnp.isfinite(y).sum()
     logdetK = 2.0 * jnp.sum(jnp.log(jnp.diag(K_chol)))
-    return -0.5 * (n * jnp.log(nu) + logdetK)
+    if nu is None:
+        return -0.5 * (n * jnp.log(nu_hat) + logdetK)
+
+    # nu_hat = r^T K^-1 r / n, so the quadratic term is n * nu_hat / nu
+    return -0.5 * (n * jnp.log(nu) + logdetK + n * nu_hat / nu)
 
 
 @eqx.filter_jit
@@ -102,14 +107,19 @@ class GaussianProcess(NamedTuple):
         f: rkhs.RBFMixture["n o m d"],
         y: Float[Array, "n"],
         *,
+        y_std: Optional[Float[Array, "n"]] = None,
         profile: kernels.Profile = kernels.matern52,
         l0: Optional[Float[Array, "d"]] = None,
         periodic: tuple[bool, ...] | None = None,
         rho_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
         nugget_range: Float[Array, "2"] = jnp.array([1e-4, 1e0]),
+        nu_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
         restarts: int = 1,
     ) -> "GaussianProcess":
-        """Maximum likelihood fit over (rho, g), best of several L-BFGS-B starts."""
+        """Maximum likelihood fit over (rho, g), best of several L-BFGS-B starts.
+        Known measurement stds y_std don't scale with nu, so nu is then fitted too, within
+        nu_range times its noiseless closed form.
+        """
         n, o, _, _ = f.l.shape
 
         # squared distances per output, constant throughout the optimisation
@@ -121,32 +131,47 @@ class GaussianProcess(NamedTuple):
         valid = eqx.error_if(valid, ~jnp.any(valid, axis=(0, 1)), "no valid distances")
         rho_scale = 1 / jnp.mean(d2, axis=(0, 1), where=valid)
 
-        def mle_loss(log_params: tuple[Float[Array, "o"], Scalar]) -> Scalar:
-            log_rho, log_g = log_params
-            rho, g = rho_scale * jnp.exp(log_rho), jnp.exp(log_g)
+        # known measurement variances, zeroed on padding so nan never reaches the gradients
+        noise = None if y_std is None else jnp.where(mask, y_std, 0.0) ** 2
+
+        def covariance(rho: Float[Array, "o"], g: Scalar, nu: Scalar | None) -> Float[Array, "n n"]:
             K = profile(utils.safe_sqrt(d2 @ rho)) + g * jnp.eye(n)
-            return -loglikelihood(K, y)
+            return K if nu is None else K + jnp.diag(noise / nu)
+
+        # center the nu search on the noiseless closed form at the box center
+        g_center = jnp.sqrt(jnp.prod(nugget_range))
+        nu_scale = factorize(covariance(rho_scale, g_center, None), y)[-1]
+
+        def unpack(log_params: tuple[Float[Array, "..."], ...]) -> tuple:
+            log_rho, log_g, *log_nu = log_params
+            nu = nu_scale * jnp.exp(log_nu[0]) if log_nu else None
+            return rho_scale * jnp.exp(log_rho), jnp.exp(log_g), nu
+
+        def mle_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
+            rho, g, nu = unpack(log_params)
+            return -loglikelihood(covariance(rho, g, nu), y, nu)
 
         # L-BFGS-B from uniform restarts over the log-space box
-        (rho_lo, rho_hi), (g_lo, g_hi) = jnp.log(rho_range), jnp.log(nugget_range)
-        key_rho, key_g = jr.split(key)
-        log_rho = jr.uniform(key_rho, (restarts, o), minval=rho_lo, maxval=rho_hi)
-        log_g = jr.uniform(key_g, (restarts,), minval=g_lo, maxval=g_hi)
+        ranges = (rho_range, nugget_range) + (() if y_std is None else (nu_range,))
+        lo, hi = zip(*(jnp.log(r) for r in ranges))
+        shapes = ((restarts, o), (restarts,), (restarts,))
+        keys = jr.split(key, len(ranges))
+        starts = tuple(
+            jr.uniform(k, s, minval=a, maxval=b) for k, s, a, b in zip(keys, shapes, lo, hi)
+        )
 
-        bounds = ((rho_lo, g_lo), (rho_hi, g_hi))
-        solve = lambda start: optim.minimise(mle_loss, start, bounds=bounds)
-        results = jax.vmap(solve)((log_rho, log_g))
+        solve = lambda start: optim.minimise(mle_loss, start, bounds=(lo, hi))
+        results = jax.vmap(solve)(starts)
 
         # extract the optimal parameters
         dead = ~jnp.any(jnp.isfinite(results.f))
         results = eqx.error_if(results, dead, "fit ended with non finite loss")
         best = jnp.nanargmin(results.f)
-        log_rho, log_g = jax.tree.map(lambda z: z[best], results.x)
-        rho, g = rho_scale * jnp.exp(log_rho), jnp.exp(log_g)
+        rho, g, nu = unpack(jax.tree.map(lambda z: z[best], results.x))
 
         # condition on the observations, caching the solves predict needs
-        K = profile(utils.safe_sqrt(d2 @ rho)) + g * jnp.eye(n)
-        K_chol, Ki_1, Ki_r, b, nu = factorize(K, y)
+        K_chol, Ki_1, Ki_r, b, nu_hat = factorize(covariance(rho, g, nu), y)
+        nu = nu_hat if nu is None else nu
         return GaussianProcess(profile, l0, periodic, rho, g, nu, b, f, y, K_chol, Ki_1, Ki_r)
 
     @eqx.filter_jit
