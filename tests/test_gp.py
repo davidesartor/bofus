@@ -162,3 +162,41 @@ def test_fitted_rho_downweights_uninformative_output():
     fitted = fit(fs, ys)
     assert float(fitted.rho[0]) > 2.0 * float(fitted.rho[1])
 
+
+
+def test_negligible_y_std_matches_noiseless_fit():
+    """Measurement stds far below the nugget leave the fit as without them."""
+    fs, ys = make_functions(8, seed=4)
+    noiseless = fit(fs, ys)
+    noisy = fit(fs, ys, y_std=jnp.full(8, 1e-6))
+    np.testing.assert_allclose(noisy.nu, noiseless.nu, rtol=1e-2)
+    for a, b in zip(noisy.predict_joint(fs), noiseless.predict_joint(fs)):
+        np.testing.assert_allclose(a, b, rtol=1e-2, atol=1e-4)
+
+
+def test_y_std_relaxes_interpolation():
+    """A noisy observation pulls the posterior less than an exact one."""
+    fs, ys = make_functions(8, seed=5)
+    y_std = jnp.zeros(8).at[0].set(3.0)
+    mean, var = fit(fs, ys, y_std=y_std).predict_marginal(fs)
+    exact_mean, exact_var = fit(fs, ys).predict_marginal(fs)
+    assert abs(mean[0] - ys[0]) > abs(exact_mean[0] - ys[0])
+    assert var[0] > exact_var[0]
+
+
+def test_padded_y_std_is_inert():
+    """NaN y_std on padded entries changes nothing."""
+    fs, ys = make_functions(6, seed=6)
+    y_std = jnp.linspace(0.1, 0.5, 6)
+    pad = 3
+    padded_fs = jax.tree.map(
+        lambda z: jnp.concatenate([z, jnp.broadcast_to(z[:1], (pad, *z.shape[1:]))]), fs
+    )
+    padded_ys = jnp.concatenate([ys, jnp.full(pad, jnp.nan)])
+    padded_std = jnp.concatenate([y_std, jnp.full(pad, jnp.nan)])
+
+    fitted = fit(fs, ys, y_std=y_std)
+    padded = fit(padded_fs, padded_ys, y_std=padded_std)
+    assert jnp.isfinite(padded.nu)
+    for a, b in zip(fitted.predict_joint(fs), padded.predict_joint(fs)):
+        np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
