@@ -21,6 +21,43 @@ def upper_confidence_bound(
     return -mu + jnp.sqrt(beta) * sigma
 
 
+@jax.custom_jvp
+def student_t_cdf(z: Float[Array, "..."], dof: Float[Array, "..."]) -> Float[Array, "..."]:
+    """Student-t cdf, differentiable through z only: betainc's own jvp is singular at z = 0."""
+    lower_tail = 0.5 * jsp.special.betainc(dof / 2, 0.5, dof / (dof + z**2))
+    return jnp.where(z < 0, lower_tail, 1.0 - lower_tail)
+
+
+@student_t_cdf.defjvp
+def _student_t_cdf_jvp(primals, tangents):
+    z, dof = primals
+    return student_t_cdf(z, dof), jsp.stats.t.pdf(z, dof) * tangents[0]
+
+
+@jax.jit
+def log_student_t_expected_improvement(
+    mu: Float[Array, "..."],
+    sigma: Float[Array, "..."],
+    y_best: Float[Array, "..."],
+    dof: Float[Array, "..."],
+) -> Float[Array, "..."]:
+    """Stable log EI under a student-t, log1mexp in the tail is safe since the ratio stays < (dof-1)/dof."""
+    z = (y_best - mu) / sigma
+    upper = z > -1
+    log_A_pdf = jnp.log((dof + z**2) / (dof - 1)) + jsp.stats.t.logpdf(z, dof)
+
+    # z > -1: direct
+    z1 = jnp.where(upper, z, 0.0)
+    log_h1 = jnp.log(z1 * student_t_cdf(z1, dof) + jnp.exp(jnp.where(upper, log_A_pdf, 0.0)))
+
+    # z <= -1: A * pdf - |z| * cdf in log space
+    z2 = jnp.where(upper, -2.0, z)
+    log_A_pdf2 = jnp.where(upper, 0.0, log_A_pdf)
+    log_h2 = log_A_pdf2 + jax.nn.log1mexp(log_A_pdf2 - jnp.log(-z2) - jnp.log(student_t_cdf(z2, dof)))
+
+    return jnp.log(sigma) + jnp.where(upper, log_h1, log_h2)
+
+
 @jax.jit
 def log_expected_improvement(
     mu: Float[Array, "..."],
@@ -174,6 +211,11 @@ def optimize_expected_improvement(
     tiny = jnp.finfo(surrogate.y.dtype).eps
     u = utils.latin_hypercube_sample(key_mc, (n_mc, batch_size))
     eps = jsp.special.ndtri(u.clip(tiny, 1.0 - tiny))
+
+    # student-t draws share one chi-square scale per sample across the batch
+    if surrogate.dof is not None:
+        chi2 = jr.chisquare(jr.fold_in(key_mc, 1), surrogate.dof, (n_mc,))
+        eps = eps * jnp.sqrt(surrogate.dof / chi2)[:, None]
     tau_relu = 1e-6 * jnp.sqrt(surrogate.nu)
 
     # analytic log EI for a single point, MC batch log EI else
@@ -182,7 +224,9 @@ def optimize_expected_improvement(
         mu, cov = surrogate.predict_joint(f)
         if batch_size == 1:
             mu, sigma = mu.squeeze(), cov.squeeze() ** 0.5
-            return -log_expected_improvement(mu, sigma, y_best)
+            if surrogate.dof is None:
+                return -log_expected_improvement(mu, sigma, y_best)
+            return -log_student_t_expected_improvement(mu, sigma, y_best, surrogate.dof)
         cov = cov + 1e-6 * jnp.trace(cov) / batch_size * jnp.eye(batch_size)
         return -q_log_expected_improvement(mu, cov, y_best, eps, tau_relu)
 

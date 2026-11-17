@@ -6,6 +6,7 @@ import pytest
 
 from bofus.acquisition import (
     log_expected_improvement,
+    log_student_t_expected_improvement,
     q_log_expected_improvement,
     upper_confidence_bound,
 )
@@ -137,3 +138,24 @@ def test_optimize_with_mixed_constraints():
     best = optimize_expected_improvement(jr.key(2), surrogate, L_RANGE)
     assert bool(jnp.isfinite(surrogate.predict_joint(best)[0]).all())
     assert bool(((best.x[..., 0] >= -1.0) & (best.x[..., 0] <= 1.0)).all())
+
+
+def test_student_t_ei_matches_quadrature():
+    """Student-t log EI equals the integral of (y_best - y)+ against the t density, gradients finite."""
+    dof, sigma, y_best = jnp.array(4.0), jnp.array(1.3), jnp.array(0.0)
+    t = jnp.linspace(-1e3, 1e3, 2_000_001)
+    for mu in [-2.0, 0.0, 1.5, 8.0, 40.0]:
+        y = mu + sigma * t
+        integrand = jnp.maximum(y_best - y, 0.0) * jsp.stats.t.pdf(t, dof)
+        expected = jnp.log(jnp.trapezoid(integrand, t))
+        got = log_student_t_expected_improvement(jnp.array(mu), sigma, y_best, dof)
+        assert got == pytest.approx(expected, abs=1e-3)
+        grad = jax.grad(log_student_t_expected_improvement)(jnp.array(mu), sigma, y_best, dof)
+        assert bool(jnp.isfinite(grad))
+
+
+def test_student_t_ei_tends_to_gaussian():
+    mu = jnp.linspace(-3.0, 1.2, 25)
+    sigma, y_best = jnp.array(0.7), jnp.array(0.5)
+    t_ei = log_student_t_expected_improvement(mu, sigma, y_best, jnp.array(1e3))
+    assert t_ei == pytest.approx(log_expected_improvement(mu, sigma, y_best), rel=1e-2, abs=1e-2)
