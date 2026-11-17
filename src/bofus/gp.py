@@ -24,13 +24,13 @@ def factorize(
     dof = jnp.maximum(mask.sum() - 1, 1)
     K = utils.mask_covariance(K, mask)
     y = jnp.where(mask, y, 0.0)
-    
+
     # one solve for K^-1 @ 1 and K^-1 @ y, the trend b weights the observations by Ki_1
     K_chol = cholesky(K, lower=True)
     Ki_1, Ki_y = cho_solve((K_chol, True), jnp.stack([1.0 * mask, y], axis=-1)).T
     b = jnp.average(y, weights=Ki_1)
 
-    # REML scale nu from the residual solve Ki_r = K^-1 @ (y - b), one dof spent on b
+    # REML scale nu, one dof spent on b
     Ki_r = Ki_y - b * Ki_1
     nu = jnp.sum(jnp.where(mask, (y - b) * Ki_r, 0.0)) / dof
 
@@ -53,7 +53,6 @@ def loglikelihood(
     if nu is None:
         return -0.5 * (dof * jnp.log(nu_hat) + logdetK)
 
-    # nu_hat = r^T K^-1 r / dof, so the quadratic term is dof * nu_hat / nu
     return -0.5 * (dof * jnp.log(nu) + logdetK + dof * nu_hat / nu)
 
 
@@ -120,10 +119,7 @@ class GaussianProcess(NamedTuple):
         nu_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
         restarts: int = 1,
     ) -> "GaussianProcess":
-        """REML fit over (rho, g), best of several L-BFGS-B starts, with nu integrated out.
-        Known measurement stds y_std don't scale with nu, so nu is then a fitted point
-        estimate within nu_range times its noiseless closed form, and the predictive gaussian.
-        """
+        """MAP fit of (rho, g) on the REML likelihood, nu integrated out unless y_std is given."""
         n, o, _, _ = f.l.shape
 
         # squared distances per output, constant throughout the optimisation
@@ -151,20 +147,26 @@ class GaussianProcess(NamedTuple):
             nu = nu_scale * jnp.exp(log_nu[0]) if log_nu else None
             return rho_scale * jnp.exp(log_rho), jnp.exp(log_g), nu
 
-        def reml_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
-            rho, g, nu = unpack(log_params)
-            return -loglikelihood(covariance(rho, g, nu), y, nu)
-
-        # L-BFGS-B from uniform restarts over the log-space box
+        # log-normal priors on (rho, g), box = ±3 std; nu stays flat in log, as in the noiseless branch
         ranges = (rho_range, nugget_range) + (() if y_std is None else (nu_range,))
         lo, hi = zip(*(jnp.log(r) for r in ranges))
+        prior_mean = tuple((a + b) / 2 for a, b in zip(lo[:2], hi[:2]))
+        prior_std = tuple((b - a) / 6 for a, b in zip(lo[:2], hi[:2]))
+
+        def map_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
+            rho, g, nu = unpack(log_params)
+            z = jax.tree.map(lambda u, m, s: (u - m) / s, log_params[:2], prior_mean, prior_std)
+            neg_log_prior = 0.5 * sum(jnp.sum(zi**2) for zi in z)
+            return -loglikelihood(covariance(rho, g, nu), y, nu) + neg_log_prior
+
+        # L-BFGS-B from uniform restarts over the log-space box
         shapes = ((restarts, o), (restarts,), (restarts,))
         keys = jr.split(key, len(ranges))
         starts = tuple(
             jr.uniform(k, s, minval=a, maxval=b) for k, s, a, b in zip(keys, shapes, lo, hi)
         )
 
-        solve = lambda start: optim.minimise(reml_loss, start, bounds=(lo, hi))
+        solve = lambda start: optim.minimise(map_loss, start, bounds=(lo, hi))
         results = jax.vmap(solve)(starts)
 
         # extract the optimal parameters
@@ -175,7 +177,7 @@ class GaussianProcess(NamedTuple):
 
         # condition on the observations, caching the solves predict needs
         K_chol, Ki_1, Ki_r, b, nu_hat = factorize(covariance(rho, g, nu), y)
-        # jeffreys prior on nu gives a student-t predictive with the REML dof
+        # integrating nu out leaves a student-t with n - 1 dof
         dof = None if nu is not None else jnp.maximum(mask.sum() - 1, 1).astype(y.dtype)
         nu = nu_hat if nu is None else nu
         return GaussianProcess(
@@ -186,9 +188,7 @@ class GaussianProcess(NamedTuple):
     def predict_joint(
         self, f: rkhs.RBFMixture["q o m d"]
     ) -> tuple[Float[Array, "q"], Float[Array, "q q"]]:
-        """Posterior location and scale matrix at f, including the estimated trend's uncertainty.
-        Student-t with self.dof degrees of freedom when nu is integrated out, gaussian otherwise.
-        """
+        """Posterior location and scale at f, student-t with self.dof dof (gaussian if None)."""
         # cancellation only approximates the exact zeros of coincident functions
         dist = lambda *fs: utils.safe_sqrt(
             pairwise_squared_distance(self.l0, *fs, periodic=self.periodic) @ self.rho
