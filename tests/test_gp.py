@@ -118,7 +118,7 @@ def test_fit_stays_finite_on_duplicated_observations():
 
 
 def test_trend_and_scale_match_gls_formulas():
-    """b and nu must equal the closed-form GLS estimates on a dense covariance."""
+    """b and nu must equal the closed-form GLS / REML estimates on a dense covariance."""
     rng = np.random.default_rng(3)
     n = 8
     A = rng.standard_normal((n, n))
@@ -130,12 +130,12 @@ def test_trend_and_scale_match_gls_formulas():
     Ki = np.linalg.inv(K)
     b_naive = np.sum(Ki @ np.asarray(y)) / np.sum(Ki)
     r = np.asarray(y) - b_naive
-    nu_naive = r @ Ki @ r / n
+    nu_naive = r @ Ki @ r / (n - 1)
     np.testing.assert_allclose(float(b), b_naive, rtol=1e-4)
     np.testing.assert_allclose(float(nu), nu_naive, rtol=1e-4)
 
 
-def test_loglikelihood_matches_naive_concentrated_formula():
+def test_loglikelihood_matches_naive_reml_formula():
     rng = np.random.default_rng(4)
     n = 8
     A = rng.standard_normal((n, n))
@@ -147,8 +147,9 @@ def test_loglikelihood_matches_naive_concentrated_formula():
     Ki = np.linalg.inv(K)
     b = np.sum(Ki @ np.asarray(y)) / np.sum(Ki)
     r = np.asarray(y) - b
-    nu = r @ Ki @ r / n
-    naive = -0.5 * (n * np.log(nu) + np.linalg.slogdet(np.asarray(K))[1])
+    nu = r @ Ki @ r / (n - 1)
+    logdet = np.linalg.slogdet(np.asarray(K))[1] + np.log(np.sum(Ki))
+    naive = -0.5 * ((n - 1) * np.log(nu) + logdet)
     np.testing.assert_allclose(float(got), naive, rtol=1e-4)
 
 
@@ -200,3 +201,9 @@ def test_padded_y_std_is_inert():
     assert jnp.isfinite(padded.nu)
     for a, b in zip(fitted.predict_joint(fs), padded.predict_joint(fs)):
         np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
+
+
+def test_dof_is_reml_and_gaussian_with_known_noise():
+    fs, ys = make_functions(7, seed=7)
+    assert float(fit(fs, ys).dof) == 6.0
+    assert fit(fs, ys, y_std=jnp.full(7, 0.1)).dof is None
