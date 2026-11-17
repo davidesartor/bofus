@@ -16,20 +16,23 @@ def factorize(
     K: Float[Array, "n n"],
     y: Float[Array, "n"],
 ) -> tuple[Float[Array, "n n"], Float[Array, "n"], Float[Array, "n"], Scalar, Scalar]:
-    """Cholesky factor and solves of K, with the trend b and scale nu profiled out.
+    """Cholesky factor and solves of K, with the trend b and the REML scale nu.
     A nan observation marks padding, masked to an identity block of the factor.
     """
+    # mask the covariance matrix and observations
     mask = jnp.isfinite(y)
+    dof = jnp.maximum(mask.sum() - 1, 1)
+    K = utils.mask_covariance(K, mask)
     y = jnp.where(mask, y, 0.0)
-    K_chol = cholesky(utils.mask_covariance(K, mask), lower=True)
-
+    
     # one solve for K^-1 @ 1 and K^-1 @ y, the trend b weights the observations by Ki_1
+    K_chol = cholesky(K, lower=True)
     Ki_1, Ki_y = cho_solve((K_chol, True), jnp.stack([1.0 * mask, y], axis=-1)).T
     b = jnp.average(y, weights=Ki_1)
 
-    # optimal scale nu from the residual solve Ki_r = K^-1 @ (y - b)
+    # REML scale nu from the residual solve Ki_r = K^-1 @ (y - b), one dof spent on b
     Ki_r = Ki_y - b * Ki_1
-    nu = jnp.average((y - b) * Ki_r, weights=mask)
+    nu = jnp.sum(jnp.where(mask, (y - b) * Ki_r, 0.0)) / dof
 
     # constant observations give nu = 0, floor it at their float resolution
     resolution = jnp.finfo(y.dtype).eps * jnp.max(jnp.abs(y))
@@ -43,15 +46,15 @@ def loglikelihood(
     y: Float[Array, "n"],
     nu: Scalar | None = None,
 ) -> Scalar:
-    """Marginal likelihood with the trend concentrated out, and the scale nu too unless given."""
-    K_chol, _, _, _, nu_hat = factorize(K, y)
-    n = jnp.isfinite(y).sum()
-    logdetK = 2.0 * jnp.sum(jnp.log(jnp.diag(K_chol)))
+    """REML likelihood: trend integrated out under a flat prior, scale nu concentrated unless given."""
+    K_chol, Ki_1, _, _, nu_hat = factorize(K, y)
+    dof = jnp.maximum(jnp.isfinite(y).sum() - 1, 1)
+    logdetK = 2.0 * jnp.sum(jnp.log(jnp.diag(K_chol))) + jnp.log(Ki_1.sum())
     if nu is None:
-        return -0.5 * (n * jnp.log(nu_hat) + logdetK)
+        return -0.5 * (dof * jnp.log(nu_hat) + logdetK)
 
-    # nu_hat = r^T K^-1 r / n, so the quadratic term is n * nu_hat / nu
-    return -0.5 * (n * jnp.log(nu) + logdetK + n * nu_hat / nu)
+    # nu_hat = r^T K^-1 r / dof, so the quadratic term is dof * nu_hat / nu
+    return -0.5 * (dof * jnp.log(nu) + logdetK + dof * nu_hat / nu)
 
 
 @eqx.filter_jit
@@ -89,6 +92,7 @@ class GaussianProcess(NamedTuple):
     rho: Float[Array, "o"]  # weight output dimensions
     g: Scalar  # noise nugget
     nu: Scalar  # covariance scale
+    dof: Scalar | None  # student-t degrees of freedom
     b: Scalar  # mean trend
 
     # observations, nan values mark padded entries
@@ -116,9 +120,9 @@ class GaussianProcess(NamedTuple):
         nu_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
         restarts: int = 1,
     ) -> "GaussianProcess":
-        """Maximum likelihood fit over (rho, g), best of several L-BFGS-B starts.
-        Known measurement stds y_std don't scale with nu, so nu is then fitted too, within
-        nu_range times its noiseless closed form.
+        """REML fit over (rho, g), best of several L-BFGS-B starts, with nu integrated out.
+        Known measurement stds y_std don't scale with nu, so nu is then a fitted point
+        estimate within nu_range times its noiseless closed form, and the predictive gaussian.
         """
         n, o, _, _ = f.l.shape
 
@@ -147,7 +151,7 @@ class GaussianProcess(NamedTuple):
             nu = nu_scale * jnp.exp(log_nu[0]) if log_nu else None
             return rho_scale * jnp.exp(log_rho), jnp.exp(log_g), nu
 
-        def mle_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
+        def reml_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
             rho, g, nu = unpack(log_params)
             return -loglikelihood(covariance(rho, g, nu), y, nu)
 
@@ -160,7 +164,7 @@ class GaussianProcess(NamedTuple):
             jr.uniform(k, s, minval=a, maxval=b) for k, s, a, b in zip(keys, shapes, lo, hi)
         )
 
-        solve = lambda start: optim.minimise(mle_loss, start, bounds=(lo, hi))
+        solve = lambda start: optim.minimise(reml_loss, start, bounds=(lo, hi))
         results = jax.vmap(solve)(starts)
 
         # extract the optimal parameters
@@ -171,17 +175,24 @@ class GaussianProcess(NamedTuple):
 
         # condition on the observations, caching the solves predict needs
         K_chol, Ki_1, Ki_r, b, nu_hat = factorize(covariance(rho, g, nu), y)
+        # jeffreys prior on nu gives a student-t predictive with the REML dof
+        dof = None if nu is not None else jnp.maximum(mask.sum() - 1, 1).astype(y.dtype)
         nu = nu_hat if nu is None else nu
-        return GaussianProcess(profile, l0, periodic, rho, g, nu, b, f, y, K_chol, Ki_1, Ki_r)
+        return GaussianProcess(
+            profile, l0, periodic, rho, g, nu, dof, b, f, y, K_chol, Ki_1, Ki_r
+        )
 
     @eqx.filter_jit
     def predict_joint(
         self, f: rkhs.RBFMixture["q o m d"]
     ) -> tuple[Float[Array, "q"], Float[Array, "q q"]]:
-        """Posterior mean and covariance at f, including the estimated trend's uncertainty."""
+        """Posterior location and scale matrix at f, including the estimated trend's uncertainty.
+        Student-t with self.dof degrees of freedom when nu is integrated out, gaussian otherwise.
+        """
         # cancellation only approximates the exact zeros of coincident functions
-        d2 = lambda *fs: pairwise_squared_distance(self.l0, *fs, periodic=self.periodic)
-        dist = lambda *fs: utils.safe_sqrt(d2(*fs) @ self.rho)
+        dist = lambda *fs: utils.safe_sqrt(
+            pairwise_squared_distance(self.l0, *fs, periodic=self.periodic) @ self.rho
+        )
         Kqq = self.profile(dist(f))
         Knq = self.profile(dist(self.f, f))
 
@@ -201,7 +212,7 @@ class GaussianProcess(NamedTuple):
     def predict_marginal(
         self, f: rkhs.RBFMixture["q o m d"]
     ) -> tuple[Float[Array, "q"], Float[Array, "q"]]:
-        """Posterior mean and variance of each function on its own."""
+        """Posterior location and squared scale of each function on its own."""
         f = jax.tree.map(lambda z: z[:, None], f)
         mean, cov = jax.vmap(self.predict_joint)(f)
         return mean.squeeze(-1), cov.squeeze((-2, -1))
