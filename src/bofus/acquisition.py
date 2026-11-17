@@ -157,7 +157,10 @@ def optimize_expected_improvement(
     batch_size: int = 1,
     multi_starts: int = 32,
     n_probes: int = 1024,
-    probe_chunk: int = 64,
+    probe_chunk: int = 1,
+    solve_chunk: int = 1,
+    gtol: float = 1e-5,
+    ftol: float = 1e-5,
     n_mc: int = 512,
     n_best: int = 4,
     sigma_around_best: float = 1e-2,
@@ -235,9 +238,9 @@ def optimize_expected_improvement(
     starts = boltzmann_select(key_select, scores, multi_starts, eta)
     starts = jax.tree.map(lambda z: z[starts], probes)
 
-    # box constrained L-BFGS-B from each start
-    solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds)
-    results = jax.vmap(solve)(starts)
+    # box constrained L-BFGS-B from each start, mapped since vmap runs every start to the slowest
+    solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds, tol=gtol, ftol=ftol)
+    results = jax.lax.map(solve, starts, batch_size=solve_chunk)
 
     # return the batch with the best Monte Carlo EI
     all_dead = ~jnp.any(jnp.isfinite(results.f))
