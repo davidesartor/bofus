@@ -85,20 +85,16 @@ def test_matches_vmap_over_scalars():
 # ---- sampling and optimization over RBF mixtures ----
 
 from bofus import gp, kernels
-from bofus.acquisition import A_MAX, optimize_expected_improvement
+from bofus.acquisition import optimize_expected_improvement
 from bofus.rkhs import X_MAX, RBFMixture
 
 L_RANGE = (jnp.array(0.05**2), jnp.array(0.4**2))
+A_RANGE = (jnp.array(-3.0), jnp.array(3.0))
 
 
 def sample_functions(key, shape, l_range=L_RANGE):
-    """Uniform mixtures on the box, lengthscales log-uniform."""
-    *batch, m, d = shape
-    key_l, key_x, key_a = jr.split(key, 3)
-    log_l = jr.uniform(key_l, shape, minval=jnp.log(l_range[0]), maxval=jnp.log(l_range[1]))
-    x = jr.uniform(key_x, shape, minval=-X_MAX, maxval=X_MAX)
-    a = jr.uniform(key_a, (*batch, m), minval=-A_MAX, maxval=A_MAX)
-    return RBFMixture(jnp.exp(log_l), x, a)
+    """Mixtures from the prior."""
+    return RBFMixture.sample(key, shape, l_range, A_RANGE)
 
 
 def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
@@ -112,7 +108,7 @@ def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
 def test_optimize_returns_valid_candidate():
     _, ys, surrogate = make_surrogate()
     best = optimize_expected_improvement(
-        jr.key(3), surrogate, L_RANGE
+        jr.key(3), surrogate, L_RANGE, A_RANGE
     )
 
     def neg_log_ei(f):
@@ -135,7 +131,7 @@ def test_optimize_with_mixed_constraints():
     ys = jr.normal(jr.key(1), (8,))
     l0 = jnp.full(2, L_RANGE[0])
     surrogate = gp.GaussianProcess.fit(jr.key(3), fs, ys, l0=l0, periodic=periodic)
-    best = optimize_expected_improvement(jr.key(2), surrogate, L_RANGE)
+    best = optimize_expected_improvement(jr.key(2), surrogate, L_RANGE, A_RANGE)
     assert bool(jnp.isfinite(surrogate.predict_joint(best)[0]).all())
     assert bool(((best.x[..., 0] >= -1.0) & (best.x[..., 0] <= 1.0)).all())
 

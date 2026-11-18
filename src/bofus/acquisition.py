@@ -1,5 +1,6 @@
 from jaxtyping import Array, Bool, Float, Int, Key, Scalar
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
@@ -8,9 +9,6 @@ import equinox as eqx
 import vlse.optim
 
 from . import rkhs, gp, utils
-
-A_MAX = 3.0  # amplitude box [-A_MAX, A_MAX], wide enough for tanh to saturate
-
 
 @jax.jit
 def upper_confidence_bound(
@@ -154,6 +152,7 @@ def optimize_expected_improvement(
     key: Key,
     surrogate: gp.GaussianProcess,
     l_range: tuple[Scalar, Scalar],
+    a_range: tuple[Scalar, Scalar],
     batch_size: int = 1,
     multi_starts: int = 32,
     n_probes: int = 1024,
@@ -169,7 +168,6 @@ def optimize_expected_improvement(
     """Maximize Monte Carlo batch EI over RBF mixtures, screening probe batches then L-BFGS-B."""
     _, o, m, d = surrogate.f.l.shape
     x_range = (jnp.asarray(-rkhs.X_MAX), jnp.asarray(rkhs.X_MAX))
-    a_range = (jnp.asarray(-A_MAX), jnp.asarray(A_MAX))
     mask = jnp.isfinite(surrogate.y)
 
     log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
@@ -178,36 +176,32 @@ def optimize_expected_improvement(
     def mixture(log_l, x, a) -> rkhs.RBFMixture["... m d"]:
         return rkhs.RBFMixture(jnp.exp(log_l), x, a)
 
-    def box_sample(key: Key, shape: tuple[int, ...]) -> tuple[Array, Array, Array]:
-        """Latin hypercube (log_l, x, a) over the box, shape counts up to the atoms."""
-        p = utils.latin_hypercube_sample(key, (*shape, 2 * d + 1))
-        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
-        return jax.tree.map(utils.rescale, (log_l, x, a.squeeze(-1)), *bounds)
-
     # incumbent as the best posterior mean over the observations, consistent with the nugget
     mu_obs, _ = surrogate.predict_marginal(surrogate.f)
     y_best = jnp.where(mask, mu_obs, jnp.inf).min()
 
-    # half the probe batches cover the box, half perturb the n_best observed points
+    # half the probe batches draw from the prior, half perturb the n_best observed points
     key_cover, key_center, key_fresh, key_perturb, key_select, key_mc = jr.split(key, 6)
     n_cover = n_probes // 2
     n_around = n_probes - n_cover
-    cover = box_sample(key_cover, (n_cover, batch_size, o, m))
+    cover = rkhs.RBFMixture.sample(key_cover, (n_cover, batch_size, o, m, d), l_range, a_range)
     order = jnp.argsort(jnp.where(mask, surrogate.y, jnp.inf))
     n_top = jnp.minimum(n_best, mask.sum())
     center = order[jr.randint(key_center, (n_around, batch_size), 0, n_top)]
-    log_l, x, a = jnp.log(surrogate.f.l)[center], surrogate.f.x[center], surrogate.f.a[center]
+    around = jax.tree.map(lambda z: z[center], surrogate.f)
 
     # inert padded atoms get fresh lengthscales and centers, so the optimizer can grow them
-    fresh_log_l, fresh_x, _ = box_sample(key_fresh, a.shape)
-    inert = (a == 0.0)[..., None]
-    around = (jnp.where(inert, fresh_log_l, log_l), jnp.where(inert, fresh_x, x), a)
+    fresh = rkhs.RBFMixture.sample(key_fresh, around.l.shape, l_range, a_range)
+    inert = (around.a == 0.0)[..., None]
+    around = around._replace(l=jnp.where(inert, fresh.l, around.l), x=jnp.where(inert, fresh.x, around.x))
 
-    # gaussian perturbation relative to each range, clipped to the box
+    # gaussian perturbation of (log_l, x, a) relative to each range, clipped to the box
     perturb = lambda k, z, lo, hi: (
         z + sigma_around_best * (hi - lo) * jr.normal(k, z.shape)
     ).clip(lo, hi)
+    around = (jnp.log(around.l), around.x, around.a)
     around = jax.tree.map(perturb, tuple(jr.split(key_perturb, 3)), around, *bounds)
+    cover = (jnp.log(cover.l), cover.x, cover.a)
     probes = jax.tree.map(lambda *zs: jnp.concatenate(zs), cover, around)
 
     # stratified normal draws, fixed so the Monte Carlo objective is deterministic

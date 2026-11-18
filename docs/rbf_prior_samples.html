@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RBF Mixture Prior</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --fg: #18202b; --muted: #5d6877; --rule: #dde2e8; --cell: #f0f3f6;
+  --accent: #0e6f7c; --warn: #b5532c; --blue: #2f5bd3;
+  --heat-lo: #3b6fd8; --heat-mid: #eef1f4; --heat-hi: #c8562e; --heat-max: 0.7;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151b; --panel: #181e26; --fg: #e3e8ee; --muted: #94a0ae; --rule: #2a323d; --cell: #1f2630;
+    --accent: #5cc3cf; --warn: #e48a62; --blue: #86a6f2;
+    --heat-lo: #2c4f9e; --heat-mid: #232a33; --heat-hi: #9a4424; --heat-max: 0.9;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151b; --panel: #181e26; --fg: #e3e8ee; --muted: #94a0ae; --rule: #2a323d; --cell: #1f2630;
+  --accent: #5cc3cf; --warn: #e48a62; --blue: #86a6f2;
+  --heat-lo: #2c4f9e; --heat-mid: #232a33; --heat-hi: #9a4424; --heat-max: 0.9;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 32px;
+}
+header.intro { max-width: 75ch; padding-block: 20px 8px; display: grid; gap: 6px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.intro p { margin: 0; color: var(--muted); }
+.mono, code { font-family: var(--mono); font-size: 0.92em; }
+
+.controls {
+  position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--rule);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding-block: 12px;
+}
+.seg { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.seg .cap { margin-right: 4px; }
+.seg label { font: 500 13px var(--sans); border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); padding: 7px 12px; min-height: 36px; display: inline-flex; align-items: center; cursor: pointer; }
+.seg label:has(input:checked) { border-color: var(--accent); color: var(--accent); }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mfield { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; min-width: 0; }
+.mfield label { font-family: var(--mono); font-size: 14px; white-space: nowrap; min-width: 7.5em; font-variant-numeric: tabular-nums; }
+.mfield label b { font-weight: 500; color: var(--accent); }
+input[type=range] { flex: 1; min-width: 0; height: 32px; accent-color: var(--accent); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+button, .toggle {
+  font: 500 13px var(--sans); color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 7px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-height: 36px;
+}
+button:hover, .toggle:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle input { accent-color: var(--accent); margin: 0; }
+.toggle select { font: 500 13px var(--sans); color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: 2px 4px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; padding-top: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: 0; align-content: start; }
+.panel h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.sub { font-size: 12.5px; color: var(--muted); margin: 0; }
+canvas { display: block; width: 100%; max-width: 100%; }
+canvas.fns { aspect-ratio: 16 / 10; }
+canvas.hist { height: 56px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 14px; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.stats b { color: var(--fg); font-weight: 500; }
+.stats b.bad { color: var(--warn); }
+.cap { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.key { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.key i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
+
+.heat-wrap { overflow-x: auto; }
+table.heat { border-collapse: separate; border-spacing: 2px; font: 11px var(--mono); font-variant-numeric: tabular-nums; width: 100%; }
+table.heat th { color: var(--muted); font-weight: 400; padding: 2px 4px; }
+table.heat td { text-align: center; padding: 6px 2px; border-radius: 3px; cursor: pointer; color: var(--fg); min-width: 30px; }
+table.heat td.sel { outline: 2px solid var(--fg); outline-offset: -2px; }
+.legend { display: flex; align-items: center; gap: 8px; font: 11px var(--mono); color: var(--muted); }
+.legend .bar { flex: 0 1 220px; height: 10px; border-radius: 2px; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 20; display: none; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font: 12px var(--mono); box-shadow: 0 4px 14px rgb(0 0 0 / 0.15); white-space: pre;
+}
+footer { max-width: 75ch; color: var(--muted); font-size: 12.5px; padding-top: 20px; display: grid; gap: 6px; }
+footer p { margin: 0; }
+</style>
+</head>
+<body>
+
+<header class="intro">
+  <h1>RBF mixture prior</h1>
+  <p>Samples of <span class="mono">RBFMixture.sample</span>: <span class="mono">f(x) = Σ<sub>i</sub> a<sub>i</sub> Π<sub>j</sub> exp(−(x<sub>j</sub> − x<sub>ij</sub>)² / 2l<sub>ij</sub>)</span> on [−1, 1]<sup>d</sup>. Each log l<sub>ij</sub> = log β + σ ε with σ = σ<sub>0</sub> / √d, ε ~ N(0, 1), β solving (m + 1)·E[φ²] = coverage, so atoms fill that fraction of the box at any d; amplitudes are N(0, 1/(m·E[φ²])) at the final β, so the box mean of Var f is 1 before clipping. l and a are then clipped to their ranges. The <span class="mono">l prior</span> switch compares l = β G with G ~ Gamma(α<sub>eff</sub> + d/2) and log-uniform l on log β ± W<sub>0</sub> / (2√d), β solved the same way, and uniform l with median at the single-scale coverage l* ((m + 1)·E[φ²(l*)] = coverage) and upper bound at half the l cap, the lower bound clamped to the l range. Log-normal: log l = log β + σ ε with σ = σ<sub>0</sub> / √d, β solved the same way. Amplitudes are normalized the same way for all five.</p>
+</header>
+
+<div class="controls">
+  <div class="seg" id="dist" role="radiogroup" aria-label="l prior">
+    <span class="cap">l prior</span>
+    <label><input type="radio" name="dist" value="u"> uniform</label>
+    <label><input type="radio" name="dist" value="ig"> inverse-gamma</label>
+    <label><input type="radio" name="dist" value="g"> gamma</label>
+    <label><input type="radio" name="dist" value="lu"> log-uniform</label>
+    <label><input type="radio" name="dist" value="ln" checked> log-normal (sample)</label>
+  </div>
+  <div class="mfield"><label for="m">m = <b id="mval">4</b></label><input id="m" type="range" min="0" max="11" step="1" value="3"></div>
+  <div class="mfield"><label for="dim">d = <b id="dimval">1</b></label><input id="dim" type="range" min="1" max="8" step="1" value="1"></div>
+  <div class="mfield"><label for="lf">coverage = <b id="lfval">1</b></label><input id="lf" type="range" min="0" max="5" step="1" value="4"></div>
+  <div class="mfield"><label for="ae">α<sub>eff</sub> = <b id="aeval">2</b></label><input id="ae" type="range" min="0" max="5" step="1" value="2"></div>
+  <div class="mfield"><label for="w0">W<sub>0</sub> = <b id="w0val">2.5</b></label><input id="w0" type="range" min="0" max="5" step="1" value="2"></div>
+  <div class="mfield"><label for="s0">σ<sub>0</sub> = <b id="s0val">1</b></label><input id="s0" type="range" min="0" max="5" step="1" value="3"></div>
+  <div class="btns">
+    <label class="toggle" for="bounds">l range <select id="bounds">
+      <option value="open" selected>(1e-3, d) run.py default</option>
+      <option value="lib">(1e-3, 1) fixed cap</option>
+    </select></label>
+    <label class="toggle" for="periodic"><input id="periodic" type="checkbox"> periodic (all dims)</label>
+    <label class="toggle" for="tanh"><input id="tanh" type="checkbox"> tanh(f)</label>
+    <button id="resample" type="button">Resample</button>
+  </div>
+</div>
+
+<main class="grid">
+  <section class="panel">
+    <h2>Samples at the current m, d</h2>
+    <p class="sub">16 draws along x<sub>1</sub>, the other coordinates fixed at a random point per draw. Dashed: ±3 (amplitude clip), ±1.</p>
+    <canvas class="fns" id="fns" role="img" aria-label="16 sampled functions"></canvas>
+    <div class="key"><span><i style="background:var(--accent)"></i>no atom clipped</span><span><i style="background:var(--warn)"></i>some l or a clipped</span></div>
+    <div class="stats" id="stats"></div>
+    <div class="cap">Distribution of √l before clipping (log axis), shaded outside the range</div>
+    <canvas class="hist" id="hist" role="img" aria-label="Histogram of sqrt l"></canvas>
+  </section>
+  <section class="panel">
+    <h2>Box variance after clipping</h2>
+    <p class="sub">Box mean of Var f(x) for every d and m at the current coverage, spread and l range. It is 1 before clipping; the colour shows how far clipping moves it. Click a cell to select it.</p>
+    <div class="heat-wrap"><table class="heat" id="heat"></table></div>
+    <div class="legend"><span>0.25</span><div class="bar" id="legbar"></div><span>4</span><span>(log scale, grey = 1)</span></div>
+  </section>
+</main>
+
+<footer>
+  <p>Exact values (variance, clipped mass) use the same 512-point quadrature as the code: log L on −log α + [−6, 6] with inverse-gamma weights (gamma: log α + [−12, 6]), β by interpolation over ±log α + [−20, 10]. Variance after clipping is m·E[a²<sub>clip</sub>]·E[φ²(l<sub>clip</sub>)], with each factor computed in closed form or by that quadrature. <span class="mono">MC var</span> checks it on 160 fresh draws × 64 points; with <span class="mono">periodic</span> on, every dimension wraps with period 2 like the kernel, while the exact values keep the line energy the code uses, so MC var shows that approximation; <span class="mono">kurtosis</span> E f⁴ / (E f²)² on the same points is 3 for Gaussian-like f and grows when f is flat except for rare spikes.</p>
+  <p>The l range follows <span class="mono">scripts/run.py</span>: an unset cap (None) becomes d, since the coverage lengthscale grows like 2d / (3 ln m); a fixed cap of 1 starves high d. Amplitudes are clipped to ±3.</p>
+</footer>
+<div id="tip"></div>
+
+<script>
+const MS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+const LFS = [0.25, 0.35, 0.5, 0.7, 1, 1.4];
+const AES = [0.5, 1, 2, 3, 5, 10];
+const W0S = [1, 1.5, 2.5, 4, 6, 8];
+const S0S = [0.25, 0.5, 0.7, 1, 1.5, 2];
+const AMAX = 3, NX = 161, G = 512, DS = [1, 2, 3, 4, 5, 6, 7, 8];
+let seed = 1, M = 4, D = 1, LF = 1, AE = 2, BOUNDS = "open", DIST = "ln", W0 = 2.5, S0 = 1;
+
+function hash(...ks) {
+  let h = 2166136261 >>> 0;
+  for (const k of ks) { h ^= k >>> 0; h = Math.imul(h, 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; }
+  return h >>> 0;
+}
+function rng(s) {
+  let a = s >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0; let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const normal = r => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+function gamma(r, k) { // Marsaglia-Tsang, unit scale
+  if (k < 1) return gamma(r, k + 1) * Math.pow(r(), 1 / k);
+  const d = k - 1 / 3, c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    let x, v;
+    do { x = normal(r); v = 1 + c * x; } while (v <= 0);
+    v = v * v * v; const u = r();
+    if (u < 1 - 0.0331 * x ** 4 || Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+function erf(x) { // Abramowitz-Stegun 7.1.26
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return x < 0 ? -y : y;
+}
+const Phi = t => 0.5 * (1 + erf(t / Math.SQRT2));
+// box mean of a squared 1-d atom, x - c triangular on [-2, 2]
+const energy = l => (Math.sqrt(Math.PI * l) * erf(2 / Math.sqrt(l)) + 0.5 * l * Math.expm1(-4 / l)) / 2;
+function interp(x, xp, fp) {
+  if (x <= xp[0]) return fp[0];
+  if (x >= xp[xp.length - 1]) return fp[fp.length - 1];
+  let lo = 0, hi = xp.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; xp[mid] <= x ? lo = mid : hi = mid; }
+  return fp[lo] + (fp[hi] - fp[lo]) * (x - xp[lo]) / (xp[hi] - xp[lo]);
+}
+const boundsOf = d => BOUNDS === "lib" ? [1e-3, 1] : [1e-3, d];
+
+// quadrature grid and log E[phi^2] over candidate scales, per (d, alpha_eff): mirrors RBFMixture.sample
+const curveCache = new Map();
+function curve(d) {
+  const key = `${d}|${AE}|${DIST}|${W0}|${S0}`;
+  if (curveCache.has(key)) return curveCache.get(key);
+  const alpha = AE + d / 2, logL = new Float64Array(G), w = new Float64Array(G), inv = DIST === "ig", flat = DIST === "lu", lognormal = DIST === "ln";
+  const width = W0 / Math.sqrt(d), sigma = S0 / Math.sqrt(d);
+  // inverse-gamma: L = 1/Gamma(alpha), gamma: L = Gamma(alpha), both as log densities in log L; lc: uniform log L
+  const [lo, hi] = flat ? [-width / 2, width / 2] : lognormal ? [-6 * sigma, 6 * sigma] : inv ? [-Math.log(alpha) - 6, -Math.log(alpha) + 6] : [Math.log(alpha) - 12, Math.log(alpha) + 6];
+  let wmax = -Infinity;
+  for (let i = 0; i < G; i++) {
+    logL[i] = flat ? lo + (hi - lo) * (i + 0.5) / G : lo + (hi - lo) * i / (G - 1);
+    w[i] = flat ? 0 : lognormal ? -0.5 * (logL[i] / sigma) ** 2 : inv ? -alpha * logL[i] - Math.exp(-logL[i]) : alpha * logL[i] - Math.exp(logL[i]);
+    wmax = Math.max(wmax, w[i]);
+  }
+  let ws = 0; for (let i = 0; i < G; i++) { w[i] = Math.exp(w[i] - wmax); ws += w[i]; }
+  for (let i = 0; i < G; i++) w[i] /= ws;
+  const E1 = logBeta => { let e = 0; for (let i = 0; i < G; i++) e += w[i] * energy(Math.exp(logBeta + logL[i])); return e; };
+  const cand = new Float64Array(G), vals = new Float64Array(G);
+  for (let j = 0; j < G; j++) { cand[j] = (flat || lognormal ? 0 : inv ? 1 : -1) * Math.log(alpha) - 20 + 30 * j / (G - 1); vals[j] = d * Math.log(E1(cand[j])); }
+  const c = { alpha, width, sigma, logL, w, E1, cand, vals };
+  curveCache.set(key, c);
+  return c;
+}
+// beta, amplitude std and the exact effect of clipping at (m, d)
+const priorCache = new Map();
+// box mean of E[a_clip^2] for a ~ N(0, s^2) clipped to +-AMAX, and its clipped mass
+function clippedAmp(s) {
+  const t = AMAX / s, tail = 2 * (1 - Phi(t));
+  return [s * s * ((1 - tail) - 2 * t * Math.exp(-t * t / 2) / Math.sqrt(2 * Math.PI)) + AMAX * AMAX * tail, tail];
+}
+// uniform l per dim: median at the single-scale coverage l*, upper at half the cap, lower clamped to the range
+function priorUniform(m, d) {
+  const [lmin, lmax] = boundsOf(d), target = Math.log(LF / (m + 1)) / d;
+  let lo = -20, hi = 10;
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; Math.log(energy(Math.exp(mid))) < target ? lo = mid : hi = mid; }
+  const lstar = Math.exp(lo), b = lmax / 2, a = Math.min(Math.max(2 * lstar - b, lmin), b);
+  let e1 = 0;
+  for (let i = 0; i < G; i++) e1 += energy(a + (b - a) * (i + 0.5) / G) / G;
+  const s = Math.exp(-0.5 * (Math.log(m) + d * Math.log(e1))), [ea2, tail] = clippedAmp(s);
+  return { dist: "u", beta: lstar, ua: a, ub: b, s, varPre: 1, varPost: m * ea2 * e1 ** d, lowMass: 0, highMass: 0, aClip: tail,
+    drawL: r => a + (b - a) * r() };
+}
+function prior(m, d) {
+  const key = `${m}|${d}|${AE}|${LF}|${BOUNDS}|${DIST}|${W0}|${S0}`;
+  if (priorCache.has(key)) return priorCache.get(key);
+  if (DIST === "u") { const p = priorUniform(m, d); priorCache.set(key, p); return p; }
+  const c = curve(d), [lmin, lmax] = boundsOf(d);
+  const logBeta = interp(Math.log(LF / (m + 1)), c.vals, c.cand);
+  const e1 = c.E1(logBeta), s = Math.exp(-0.5 * (Math.log(m) + d * Math.log(e1)));
+  let e1c = 0, lowMass = 0, highMass = 0;
+  for (let i = 0; i < G; i++) {
+    const l = Math.exp(logBeta + c.logL[i]);
+    if (l < lmin) lowMass += c.w[i]; else if (l > lmax) highMass += c.w[i];
+    e1c += c.w[i] * energy(Math.min(Math.max(l, lmin), lmax));
+  }
+  const [ea2, tail] = clippedAmp(s), beta = Math.exp(logBeta), DIST_AT = DIST;
+  const p = { dist: DIST, alpha: c.alpha, beta, drawL: r => DIST_AT === "ig" ? beta / gamma(r, c.alpha) : DIST_AT === "lu" ? beta * Math.exp(c.width * (r() - 0.5)) : DIST_AT === "ln" ? beta * Math.exp(c.sigma * normal(r)) : beta * gamma(r, c.alpha), s, varPre: m * s * s * e1 ** d, varPost: m * ea2 * e1c ** d, lowMass, highMass, aClip: tail };
+  priorCache.set(key, p);
+  return p;
+}
+
+// atom layout: d centers, d lengthscales, amplitude
+function sampleFn(i, s, p, m, d) {
+  const [lmin, lmax] = boundsOf(d), r = rng(hash(s, i)), atoms = [];
+  let clipped = false;
+  for (let j = 0; j < m; j++) {
+    for (let q = 0; q < d; q++) atoms.push(-1 + 2 * r());
+    for (let q = 0; q < d; q++) {
+      const l = p.drawL(r);
+      clipped ||= l < lmin || l > lmax;
+      atoms.push(Math.min(Math.max(l, lmin), lmax));
+    }
+    const a = normal(r) * p.s;
+    clipped ||= Math.abs(a) > AMAX;
+    atoms.push(Math.min(Math.max(a, -AMAX), AMAX));
+  }
+  return { atoms, clipped };
+}
+// 1-d bump wrapped with period 2: nearest images when narrow, Poisson dual series when wide
+function wrapped(dx, l) {
+  dx -= 2 * Math.round(dx / 2);
+  let v = 0;
+  if (l < 1) { for (let k = -3; k <= 3; k++) v += Math.exp(-0.5 * (dx + 2 * k) ** 2 / l); return v; }
+  for (let n = 1; n <= 8; n++) v += 2 * Math.exp(-0.5 * (Math.PI * n) ** 2 * l) * Math.cos(Math.PI * n * dx);
+  return Math.sqrt(2 * Math.PI * l) / 2 * (1 + v);
+}
+let PERIODIC = false;
+function evalFn(atoms, x, d) {
+  const st = 2 * d + 1; let f = 0;
+  for (let k = 0; k < atoms.length; k += st) {
+    let phi = 1;
+    if (PERIODIC) for (let q = 0; q < d; q++) phi *= wrapped(x[q] - atoms[k + q], atoms[k + d + q]);
+    else { let e = 0; for (let q = 0; q < d; q++) { const dx = x[q] - atoms[k + q]; e += dx * dx / atoms[k + d + q]; } phi = Math.exp(-0.5 * e); }
+    f += atoms[k + 2 * d] * phi;
+  }
+  return f;
+}
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function sizeCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [ctx, w, h];
+}
+function niceStep(span) {
+  const raw = span / 4, mag = 10 ** Math.floor(Math.log10(raw)), n = raw / mag;
+  return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+}
+
+function drawFns(p, useTanh, col) {
+  const cv = document.getElementById("fns"), [ctx, W, H] = sizeCanvas(cv);
+  ctx.clearRect(0, 0, W, H);
+  const curves = []; let peak = 0;
+  for (let i = 0; i < 16; i++) {
+    const { atoms, clipped } = sampleFn(i, seed, p, M, D), ys = new Float64Array(NX);
+    const rs = rng(hash(seed, i, 777)), x = new Float64Array(D);
+    for (let q = 1; q < D; q++) x[q] = -1 + 2 * rs();
+    for (let k = 0; k < NX; k++) {
+      x[0] = -1 + 2 * k / (NX - 1);
+      let f = evalFn(atoms, x, D); if (useTanh) f = Math.tanh(f);
+      ys[k] = f; peak = Math.max(peak, Math.abs(f));
+    }
+    curves.push([ys, clipped]);
+  }
+  const guide = useTanh ? 1 : 3, ymax = Math.max(peak, guide) * 1.08, step = niceStep(2 * ymax);
+  const padL = 34, padR = 6, padT = 6, padB = 18, pw = W - padL - padR, ph = H - padT - padB;
+  const X = x => padL + (x + 1) / 2 * pw, Y = v => padT + ph / 2 - (v / ymax) * (ph / 2);
+  ctx.fillStyle = col.cell; ctx.fillRect(padL, padT, pw, ph);
+  ctx.font = `10px ${css("--mono")}`; ctx.fillStyle = col.muted; ctx.lineWidth = 1;
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  const dec = step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  for (let v = -Math.floor(ymax / step) * step; v <= ymax + 1e-9; v += step) {
+    ctx.strokeStyle = col.rule; ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(padL + pw, Y(v)); ctx.stroke();
+    ctx.fillText((Math.abs(v) < 1e-9 ? 0 : v).toFixed(dec), padL - 5, Y(v));
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  [-1, 0, 1].forEach(x => ctx.fillText(String(x), X(x), H));
+  ctx.setLineDash([4, 3]);
+  for (const [g, c] of useTanh ? [[1, col.blue]] : [[3, col.warn], [1, col.blue]]) {
+    ctx.strokeStyle = c;
+    for (const v of [g, -g]) { ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(padL + pw, Y(v)); ctx.stroke(); }
+  }
+  ctx.setLineDash([]);
+  ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.globalAlpha = 0.65;
+  for (const [ys, clipped] of [...curves].sort((u, v) => u[1] - v[1])) {
+    ctx.strokeStyle = clipped ? col.warn : col.accent; ctx.beginPath();
+    ys.forEach((f, k) => { const px = X(-1 + 2 * k / (NX - 1)); k ? ctx.lineTo(px, Y(f)) : ctx.moveTo(px, Y(f)); });
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+const fmt = v => v >= 0.1 && v < 100 ? v.toPrecision(2).replace(/\.?0+$/, "") : v.toExponential(0).replace("e-", "e−");
+function drawHist(p, col) {
+  const cv = document.getElementById("hist"), [ctx, W, H] = sizeCanvas(cv);
+  ctx.clearRect(0, 0, W, H);
+  const N = 4000, r = rng(hash(seed, 77)), v = new Float64Array(N);
+  for (let n = 0; n < N; n++) v[n] = 0.5 * Math.log(p.drawL(r));
+  v.sort();
+  const [lmin, lmax] = boundsOf(D), bf = 0.5 * Math.log(lmin), bu = 0.5 * Math.log(lmax);
+  let lo = Math.min(bf, v[Math.floor(0.005 * N)]), hi = Math.max(bu, v[Math.floor(0.995 * N)]);
+  const pad = 0.04 * (hi - lo); lo -= pad; hi += pad;
+  const B = 48, counts = new Array(B).fill(0);
+  for (const z of v) counts[Math.max(0, Math.min(B - 1, Math.floor((z - lo) / (hi - lo) * B)))]++;
+  const peak = Math.max(...counts), axisH = 13, hh = H - axisH, bw = W / B, X = z => (z - lo) / (hi - lo) * W;
+  ctx.fillStyle = col.warn; ctx.globalAlpha = 0.12;
+  ctx.fillRect(0, 0, X(bf), hh); ctx.fillRect(X(bu), 0, W - X(bu), hh);
+  ctx.globalAlpha = 1;
+  counts.forEach((c, b) => {
+    const h = (c / peak) * (hh - 2), mid = lo + (b + 0.5) / B * (hi - lo);
+    ctx.fillStyle = mid < bf || mid > bu ? col.warn : col.accent;
+    ctx.fillRect(b * bw + 1, hh - h, bw - 2, h);
+  });
+  ctx.strokeStyle = col.warn; ctx.lineWidth = 1;
+  for (const z of [bf, bu]) { ctx.beginPath(); ctx.moveTo(X(z), 0); ctx.lineTo(X(z), hh); ctx.stroke(); }
+  ctx.font = `10px ${css("--mono")}`; ctx.textBaseline = "bottom";
+  const placed = [];
+  for (const [z, c] of [[bf, col.warn], [bu, col.warn], [lo + pad, col.muted], [hi - pad, col.muted]]) {
+    const x = X(z);
+    if (placed.some(q => Math.abs(q - x) < 40)) continue;
+    placed.push(x);
+    ctx.fillStyle = c; ctx.textAlign = x < 20 ? "left" : x > W - 20 ? "right" : "center";
+    ctx.fillText(fmt(Math.exp(z)), x, H);
+  }
+}
+
+function drawStats(p) {
+  const NF = 160, NP = 64, s = seed + 1000003, x = new Float64Array(D);
+  let s2 = 0, s4 = 0, n = 0;
+  for (let i = 0; i < NF; i++) {
+    const { atoms } = sampleFn(i, s, p, M, D), rp = rng(hash(s, i, 555));
+    for (let g = 0; g < NP; g++) {
+      for (let q = 0; q < D; q++) x[q] = -1 + 2 * rp();
+      const f = evalFn(atoms, x, D); s2 += f * f; s4 += f ** 4; n++;
+    }
+  }
+  const kurt = (s4 / n) / (s2 / n) ** 2;
+  const off = v => Math.abs(Math.log(v)) > Math.log(1.25) ? "bad" : "";
+  const pct = v => `${(100 * v).toFixed(v < 0.01 ? 2 : 1)}%`;
+  document.getElementById("stats").innerHTML =
+    `<span>var before clip <b>${p.varPre.toFixed(2)}</b></span>` +
+    `<span>var after clip <b class="${off(p.varPost)}">${p.varPost.toFixed(2)}</b></span>` +
+    `<span>MC var <b>${(s2 / n).toFixed(2)}</b></span>` +
+    `<span>kurtosis <b class="${kurt > 6 ? "bad" : ""}">${kurt.toFixed(1)}</b></span>` +
+    `<span>amp std <b class="${p.s > 1.5 ? "bad" : ""}">${p.s.toFixed(2)}</b></span>` +
+    `<span>l clipped low <b class="${p.lowMass > 0.05 ? "bad" : ""}">${pct(p.lowMass)}</b></span>` +
+    `<span>l clipped high <b class="${p.highMass > 0.05 ? "bad" : ""}">${pct(p.highMass)}</b></span>` +
+    `<span>a clipped <b class="${p.aClip > 0.05 ? "bad" : ""}">${pct(p.aClip)}</b></span>` +
+    (p.dist === "ln" ? `<span>β <b>${fmt(p.beta)}</b> σ <b>${(S0 / Math.sqrt(D)).toFixed(2)}</b></span>` : p.dist === "lu" ? `<span>β <b>${fmt(p.beta)}</b> W <b>${(W0 / Math.sqrt(D)).toFixed(2)}</b></span>` : p.dist === "u" ? `<span>l* <b>${fmt(p.beta)}</b> l ∈ <b>[${fmt(p.ua)}, ${fmt(p.ub)}]</b></span>` : `<span>β <b>${fmt(p.beta)}</b> α <b>${p.alpha}</b></span>`);
+}
+
+// diverging fill on log2(var), grey at 1, saturating at 0.25 and 4
+const hex = h => { h = h.replace("#", ""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+function heatColor(v, pal) {
+  const t = Math.max(-1, Math.min(1, Math.log2(v) / 2)), pole = t < 0 ? pal.lo : pal.hi, k = Math.abs(t) * pal.max;
+  return `rgb(${pal.mid.map((c, i) => Math.round(c + (pole[i] - c) * k)).join(",")})`;
+}
+const heat = document.getElementById("heat"), tip = document.getElementById("tip");
+function drawHeat() {
+  const pal = { lo: hex(css("--heat-lo")), mid: hex(css("--heat-mid")), hi: hex(css("--heat-hi")), max: +css("--heat-max") };
+  let html = `<tr><th>d \\ m</th>${MS.map(m => `<th>${m}</th>`).join("")}</tr>`;
+  for (const d of DS) {
+    html += `<tr><th>${d}</th>`;
+    for (const m of MS) {
+      const v = prior(m, d).varPost;
+      html += `<td data-m="${m}" data-d="${d}" class="${m === M && d === D ? "sel" : ""}" style="background:${heatColor(v, pal)}">${v < 0.01 ? "<.01" : v.toFixed(2)}</td>`;
+    }
+    html += "</tr>";
+  }
+  heat.innerHTML = html;
+  const stops = [-1, -0.5, 0, 0.5, 1].map(t => heatColor(2 ** (2 * t), pal));
+  document.getElementById("legbar").style.background = `linear-gradient(90deg, ${stops.join(",")})`;
+}
+heat.addEventListener("mousemove", e => {
+  const td = e.target.closest("td");
+  if (!td) { tip.style.display = "none"; return; }
+  const p = prior(+td.dataset.m, +td.dataset.d), pct = v => `${(100 * v).toFixed(1)}%`;
+  tip.textContent = `d = ${td.dataset.d}, m = ${td.dataset.m}\nvar after clip  ${p.varPost.toFixed(3)}\nl clipped low   ${pct(p.lowMass)}\nl clipped high  ${pct(p.highMass)}\na clipped       ${pct(p.aClip)}\namp std         ${p.s.toFixed(2)}`;
+  tip.style.display = "block";
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8);
+  tip.style.left = `${x}px`; tip.style.top = `${e.clientY + 14}px`;
+});
+heat.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+heat.addEventListener("click", e => {
+  const td = e.target.closest("td"); if (!td) return;
+  mInput.value = MS.indexOf(+td.dataset.m); dimInput.value = td.dataset.d; sync(); schedule();
+});
+
+const mInput = document.getElementById("m"), dimInput = document.getElementById("dim");
+const lfInput = document.getElementById("lf"), aeInput = document.getElementById("ae"), w0Input = document.getElementById("w0"), s0Input = document.getElementById("s0");
+const distInput = document.getElementById("dist"), boundsInput = document.getElementById("bounds"), tanhInput = document.getElementById("tanh"), periodicInput = document.getElementById("periodic");
+function sync() {
+  M = MS[+mInput.value]; D = +dimInput.value; LF = LFS[+lfInput.value]; AE = AES[+aeInput.value]; BOUNDS = boundsInput.value; DIST = distInput.querySelector("input:checked").value; PERIODIC = periodicInput.checked;
+  W0 = W0S[+w0Input.value]; document.getElementById("w0val").textContent = W0;
+  aeInput.disabled = DIST === "lu" || DIST === "u" || DIST === "ln"; w0Input.disabled = DIST !== "lu"; s0Input.disabled = DIST !== "ln";
+  S0 = S0S[+s0Input.value]; document.getElementById("s0val").textContent = S0;
+  document.getElementById("mval").textContent = M; document.getElementById("dimval").textContent = D;
+  document.getElementById("lfval").textContent = LF; document.getElementById("aeval").textContent = AE;
+}
+let pending = false;
+function render() {
+  pending = false;
+  const col = { accent: css("--accent"), warn: css("--warn"), blue: css("--blue"), cell: css("--cell"), rule: css("--rule"), muted: css("--muted") };
+  const p = prior(M, D);
+  drawFns(p, tanhInput.checked, col); drawHist(p, col); drawStats(p); drawHeat();
+}
+const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(render); } };
+for (const el of [mInput, dimInput, lfInput, aeInput, w0Input, s0Input]) el.addEventListener("input", () => { sync(); schedule(); });
+for (const el of [distInput, boundsInput, tanhInput, periodicInput]) el.addEventListener("change", () => { sync(); schedule(); });
+document.getElementById("resample").addEventListener("click", () => { seed = (seed * 7919 + 13) >>> 0; schedule(); });
+window.addEventListener("resize", schedule);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", schedule);
+new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+sync(); render();
+</script>
+</body>
+</html>

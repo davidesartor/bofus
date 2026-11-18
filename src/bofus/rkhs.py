@@ -6,6 +6,7 @@ import numpy as np
 import jax
 import equinox as eqx
 import jax.numpy as jnp
+import jax.random as jr
 from jax.scipy.special import erf
 
 from . import utils
@@ -33,6 +34,42 @@ class RBFMixture(NamedTuple):
     ) -> Float[Array, "*b"]:
         """Evaluate f at a single point x, vmap for more. Periodic dimensions wrap."""
         return jnp.sum(self.a * jnp.exp(log_rbf(x - self.x, self.l, periodic)), axis=-1)
+
+    @classmethod
+    def sample(
+        cls,
+        key: Array,
+        shape: tuple[int, ...],
+        l_range: tuple[Array, Array],
+        a_range: tuple[Array, Array],
+        sigma0: float = 1.0,
+        coverage: float = 1.0,
+    ) -> Self:
+        """Draw iid mixtures of shape (*b, m, d) from the prior, then clip l and a to their ranges.
+        log l ~ N(median, sigma0^2 / d), the median solved so the atoms fill coverage of the box (m + 1) E[phi^2] = coverage.
+        Amplitudes make the box mean of Var f(x) 1 before clipping. Periodic dims use the line energy.
+        """
+        *b, m, d = shape
+        key_l, key_x, key_a = jr.split(key, 3)
+        sigma = sigma0 / np.sqrt(d)
+
+        def log_energy(log_median: Float[Array, "s"]) -> Float[Array, "s"]:
+            """log E[phi^2] over the box and the log-normal l."""
+            z = jnp.linspace(-6.0, 6.0, 512)
+            l = jnp.exp(log_median[:, None] + sigma * z)
+            energy = X_MAX * jnp.sqrt(jnp.pi * l) * erf(2 * X_MAX / jnp.sqrt(l))
+            energy = (energy + 0.5 * l * jnp.expm1(-4 * X_MAX**2 / l)) / (2 * X_MAX**2)
+            return d * jnp.log(energy @ jax.nn.softmax(-0.5 * z**2))
+
+        # coverage median interpolated over a wide range of candidate medians
+        candidates = jnp.linspace(-20.0, 10.0, 512)
+        log_median = jnp.interp(jnp.log(coverage / (m + 1)), log_energy(candidates), candidates)
+
+        # at the median m E[phi^2] = m coverage / (m + 1), the amplitude variance is its inverse
+        l = jnp.exp(log_median + sigma * jr.normal(key_l, shape))
+        x = jr.uniform(key_x, shape, minval=-X_MAX, maxval=X_MAX)
+        a = jr.normal(key_a, (*b, m)) * jnp.sqrt((m + 1) / (m * coverage))
+        return cls(l.clip(*l_range), x, a.clip(*a_range))
 
     def pad_to(self, m: int) -> Self:
         """Pad with inert atoms: zero amplitude, period wide lengthscale, at the origin."""
