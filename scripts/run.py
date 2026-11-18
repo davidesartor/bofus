@@ -3,8 +3,6 @@ import os
 from functools import partial
 
 import numpy as np
-from einops import rearrange
-from scipy.stats import qmc
 
 from jaxtyping import Array, Float, Scalar
 import jax
@@ -13,7 +11,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
 
-from bofus import gp, kernels, rkhs, acquisition, utils
+from bofus import gp, kernels, rkhs, acquisition
 from targets import (
     TestFunction,
     Ridge,
@@ -47,9 +45,10 @@ def run(
     profile: kernels.Profile,
     m: int,
     initial_acquisitions: int,
-    budget: int | None = None,
+    budget: int,
     batch_size: int = 1,
-    l_range: tuple[Scalar, Scalar] = (jnp.asarray(0.04), jnp.asarray(4.0)),
+    l_range: tuple[float, float | None] = (1e-3, None),
+    a_range: tuple[Scalar, Scalar] = (jnp.asarray(-3.0), jnp.asarray(3.0)),
     fixed_l: float | None = None,
     distance: str = "rkhs",
     save_path: str | None = None,
@@ -57,15 +56,15 @@ def run(
     resume: tuple[rkhs.RBFMixture, Float[Array, "n"]] | None = None,
     verbose: bool = False,
 ) -> tuple[rkhs.RBFMixture["n o m d"], Float[Array, "n"]]:
-    """Sequential EI loop doubling the basis size, each stage doubling the observations.
-
-    With a budget, the last stage (m atoms) runs on until budget observations.
+    """Sequential EI loop doubling the basis size up to m, each stage doubling the observations.
+    The last stage (m atoms) runs on until budget observations.
     Resume continues from a checkpointed (fs, ys) as if never interrupted.
     """
-    key = jr.key(seed)
-    if fixed_l is not None:
-        l_range = (jnp.asarray(fixed_l), jnp.asarray(fixed_l))
+    key, key_init = jr.split(jr.key(seed))
     d, k = target_fn.d, target_fn.k
+    # no cap defaults to d: the coverage lengthscale of the prior grows linearly with d
+    l_min, l_max = (fixed_l, fixed_l) if fixed_l is not None else l_range
+    l_range = (jnp.asarray(l_min), jnp.asarray(d if l_max is None else l_max, dtype=float))
 
     # closed loop control marks inputs folded from (sin, cos) pairs as wrapping
     periodic = getattr(target_fn, "periodic", None)
@@ -75,16 +74,9 @@ def run(
     schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
 
     if resume is None:
-        # sobol design over log lengthscales, centers and amplitudes of the first stage
-        sobol = qmc.Sobol(k * schedule[0] * (2 * d + 1), seed=seed)
-        p = jnp.asarray(sobol.random(initial_acquisitions))
-        p = rearrange(p, "n (o m p) -> n o m p", o=k, m=schedule[0])
-        log_l, x, a = jnp.split(p, [d, 2 * d], axis=-1)
-        fs = rkhs.RBFMixture(
-            jnp.exp(utils.rescale(log_l, jnp.log(l_range[0]), jnp.log(l_range[1]))),
-            utils.rescale(x, -rkhs.X_MAX, rkhs.X_MAX),
-            utils.rescale(a.squeeze(-1), -acquisition.A_MAX, acquisition.A_MAX),
-        )
+        # initial design from the mixture prior of the first stage
+        shape = (initial_acquisitions, k, schedule[0], d)
+        fs = rkhs.RBFMixture.sample(key_init, shape, l_range, a_range)
         ys = jnp.asarray(
             [
                 target_fn(jax.tree.map(lambda z: z[i], fs), periodic=periodic)
@@ -97,27 +89,31 @@ def run(
         for _ in range(-(-(len(ys) - initial_acquisitions) // batch_size)):
             key, _ = jr.split(key)
 
-    i, stage_start = len(ys), initial_acquisitions
+    i, stage_end = len(ys), initial_acquisitions
     for m_stage in schedule:
-        # grow both buffers at the stage boundary, so each stage compiles once
-        stage_end = budget if budget is not None and m_stage == m else 2 * stage_start
-        stage_start = stage_end
+        stage_end = budget if m_stage == m else min(budget, 2 * stage_end)
         if i >= stage_end:
             continue
-        if m_stage != fs.l.shape[-2]:
-            fs = fs.pad_to(m_stage)
-        fs, ys = expand_to(fs, ys, stage_end)
+
+        # inert atoms from the prior, zero amplitude keeps the stored evaluations
+        if m_stage > fs.l.shape[-2]:
+            fs = fs.pad_to(jr.fold_in(key_init, m_stage), m_stage, l_range)
+
         while i < stage_end:
+            # grow the buffers in powers of two, so each size compiles once
+            if i == len(ys):
+                fs, ys = expand_to(fs, ys, min(stage_end, 1 << i.bit_length()))
+
             key, key_step = jr.split(key)
             key_fit, key_acq = jr.split(key_step)
             surrogate = gp.GaussianProcess.fit(
                 key_fit, fs, ys, profile=profile, l0=l0, periodic=periodic
             )
             f_batch = acquisition.optimize_expected_improvement(
-                key_acq, surrogate, l_range, batch_size=batch_size
+                key_acq, surrogate, l_range, a_range, batch_size=batch_size
             )
 
-            # Evaluate and store each candidate, truncating the batch at the budget
+            # Evaluate and store each candidate, truncating the batch at the stage end
             for j in range(min(batch_size, stage_end - i)):
                 f = jax.tree.map(lambda z: z[j], f_batch)
                 fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
@@ -125,9 +121,7 @@ def run(
 
                 if verbose:
                     best = jnp.nanmin(ys)
-                    print(
-                        f"Iteration {i + 1} (m={m_stage}): current = {ys[i]:.6g}, best = {best:.6g}"
-                    )
+                    print(f"Iteration {i + 1} (m={m_stage}): current = {ys[i]:.6g}, best = {best:.6g}")
                 i += 1
 
             # checkpoint every few acquisitions so long runs are inspectable mid-flight
@@ -191,7 +185,7 @@ if __name__ == "__main__":
     parser.add_argument("--distance", choices=["rkhs", "l2"], default="rkhs")
     parser.add_argument("--m", type=int, default=16)
     parser.add_argument("--initial_acquisitions", type=int, default=8)
-    parser.add_argument("--budget", type=int, default=None)
+    parser.add_argument("--budget", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
         "--fixed_l",
@@ -206,11 +200,6 @@ if __name__ == "__main__":
     target_fn = target_fns[args.target_fn]()
     profile = profiles_options[args.profile]
 
-    # closed loop: per-dim variance grows with d so product atoms keep their width
-    closed_loop = getattr(target_fn, "open_loop", True) is False
-    l_scale = target_fn.d if closed_loop else 1
-    l_range = (jnp.asarray(0.04 * l_scale), jnp.asarray(4.0 * l_scale))
-
     method = "adaptive" if args.fixed_l is None else f"fixed_l{args.fixed_l:g}"
     method = f"ours_{args.distance}_{method}"
     save_dir = f"{args.results_dir}/{suite_of(args.target_fn)}/{args.target_fn}/{method}/{args.profile}"
@@ -220,7 +209,7 @@ if __name__ == "__main__":
     resume = None
     if os.path.exists(save_path):
         checkpoint = np.load(save_path)
-        if args.budget is not None and len(checkpoint["y"]) >= args.budget:
+        if len(checkpoint["y"]) >= args.budget:
             print(f"already complete: {save_path}")
             raise SystemExit(0)
         if len(checkpoint["y"]) >= args.initial_acquisitions:
@@ -236,7 +225,6 @@ if __name__ == "__main__":
         initial_acquisitions=args.initial_acquisitions,
         budget=args.budget,
         batch_size=args.batch_size,
-        l_range=l_range,
         fixed_l=args.fixed_l,
         distance=args.distance,
         save_path=save_path,

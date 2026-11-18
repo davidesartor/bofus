@@ -33,7 +33,7 @@ def test_mixture_sums_per_point_rbf_atoms():
 def test_pad_to_leaves_evaluations_unchanged():
     """Padded atoms carry zero weight, so they must not move the function values."""
     f = random_mixture(jr.key(0))
-    padded = f.pad_to(9)
+    padded = f.pad_to(jr.key(2), 9, (0.01, 1.0))
     t = jr.uniform(jr.key(1), (7, 3))
     assert padded.a.shape[-1] == 9
     assert jax.vmap(padded)(t) == pytest.approx(jax.vmap(f)(t), abs=1e-6)
@@ -164,3 +164,30 @@ def test_distance_without_l0_is_the_l2_distance():
     f2 = random_mixture(jr.key(4), k=1, m=3, d=2, l_min=0.01)
     d2 = rkhs.inner(f1, f1, periodic=MIXED) + rkhs.inner(f2, f2, periodic=MIXED) - 2 * rkhs.inner(f1, f2, periodic=MIXED)
     assert rkhs.distance(f1, f2, periodic=MIXED) ** 2 == pytest.approx(d2, rel=1e-5)
+
+
+@pytest.mark.parametrize("d,m,periodic", [(1, 1, None), (1, 16, None), (2, 16, None), (3, 64, None), (2, 16, (True, False))])
+def test_sample_has_unit_box_variance(d, m, periodic):
+    n = 4096
+    a_range = (jnp.array(-3.0), jnp.array(3.0))
+    key = jr.key(10 * m + d)
+
+    # clipped to the ranges
+    l_range = (jnp.array(0.01), jnp.array(1.0))
+    f = rkhs.RBFMixture.sample(key, (n, m, d), l_range, a_range)
+    assert f.l.shape == f.x.shape == (n, m, d) and f.a.shape == (n, m)
+    assert bool((f.l >= l_range[0]).all() & (f.l <= l_range[1]).all())
+    assert bool((jnp.abs(f.x) <= rkhs.X_MAX).all() & (jnp.abs(f.a) <= a_range[1]).all())
+
+    # unclipped l and a: box mean of E f(x)^2 is 1 whatever m and d, up to Monte Carlo error
+    unbounded = (jnp.array(-1e12), jnp.array(1e12))
+    f = rkhs.RBFMixture.sample(key, (n, m, d), (jnp.array(1e-12), jnp.array(1e12)), unbounded)
+    pts = jr.uniform(jr.key(99), (n, d), minval=-rkhs.X_MAX, maxval=rkhs.X_MAX)
+    vals = jax.vmap(lambda fi, xi: fi(xi, periodic))(f, pts)
+    # periodic dims use the line energy, which underestimates wide atoms on the circle
+    assert float(jnp.mean(vals**2)) == pytest.approx(1.0, rel=0.12 if periodic is None else 0.25)
+
+
+def test_sample_single_atom_is_not_flat():
+    f = rkhs.RBFMixture.sample(jr.key(0), (4000, 1, 1), (jnp.array(1e-12), jnp.array(1e12)), (jnp.array(-3.0), jnp.array(3.0)))
+    assert float(jnp.median(jnp.sqrt(f.l))) < 1.0
