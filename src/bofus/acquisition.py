@@ -1,6 +1,5 @@
-from jaxtyping import Array, Bool, Float, Int, Key, Scalar
+from jaxtyping import Array, Float, Int, Key, Scalar
 
-import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
@@ -19,17 +18,17 @@ def upper_confidence_bound(
     return -mu + jnp.sqrt(beta) * sigma
 
 
-@jax.custom_jvp
-def student_t_cdf(z: Float[Array, "..."], dof: Float[Array, "..."]) -> Float[Array, "..."]:
-    """Student-t cdf, differentiable through z only: betainc's own jvp is singular at z = 0."""
-    lower_tail = 0.5 * jsp.special.betainc(dof / 2, 0.5, dof / (dof + z**2))
-    return jnp.where(z < 0, lower_tail, 1.0 - lower_tail)
-
-
-@student_t_cdf.defjvp
-def _student_t_cdf_jvp(primals, tangents):
-    z, dof = primals
-    return student_t_cdf(z, dof), jsp.stats.t.pdf(z, dof) * tangents[0]
+def student_t_cdf(
+    z: Float[Array, "..."],
+    dof: Float[Array, "..."],
+) -> Float[Array, "..."]:
+    """Student-t cdf, linearized near z = 0 (cubic error < eps) where betainc's jvp is 0 * inf."""
+    EPS = utils.eps(z.dtype)
+    near_zero = jnp.abs(z) < EPS ** (1 / 3)
+    z2 = jnp.where(near_zero, 1.0, z**2)
+    tail = 0.5 * jsp.special.betainc(dof / 2, 0.5, dof / (dof + z2))
+    cdf = jnp.where(z < 0, tail, 1 - tail)
+    return jnp.where(near_zero, 0.5 + jsp.stats.t.pdf(0.0, dof) * z, cdf)
 
 
 @jax.jit

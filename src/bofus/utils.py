@@ -1,12 +1,52 @@
 import functools
 import math
 import time
+from typing import Callable
 from jaxtyping import Array, Bool, Float, Key
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
+
+
+def timed(fn: Callable) -> Callable:
+    """Wrap a function to also return its wall time in seconds."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        timer = time.perf_counter()
+        out = fn(*args, **kwargs)
+        return out, time.perf_counter() - timer
+
+    return wrapper
+
+
+def eps(dtype: jnp.dtype) -> float:
+    """Machine epsilon of a floating dtype."""
+    return float(jnp.finfo(dtype).eps)
+
+
+def tiny(dtype: jnp.dtype) -> float:
+    """Smallest positive normal number of a floating dtype."""
+    return float(jnp.finfo(dtype).tiny)
+
+
+@jax.jit
+def rescale(
+    x: Float[Array, "..."],
+    low: Float[Array, "..."],
+    high: Float[Array, "..."],
+) -> Float[Array, "..."]:
+    """Map unit-cube points to the box [low, high]."""
+    return low + x * (high - low)
+
+
+@jax.jit
+def safe_sqrt(x: Float[Array, "..."]) -> Float[Array, "..."]:
+    """Square root with a zero subgradient wherever x <= 0."""
+    positive = x > 0.0
+    return jnp.where(positive, jnp.sqrt(jnp.where(positive, x, 1.0)), 0.0)
 
 
 @jax.jit
@@ -18,13 +58,6 @@ def mask_covariance(
     I = jnp.eye(cov.shape[-1], dtype=cov.dtype)
     observed = mask[..., None, :] & mask[..., :, None]
     return jnp.where(observed, cov, I)
-
-
-@jax.jit
-def safe_sqrt(x: Float[Array, "..."]) -> Float[Array, "..."]:
-    """Square root with a zero subgradient wherever x <= 0."""
-    positive = x > 0.0
-    return jnp.where(positive, jnp.sqrt(jnp.where(positive, x, 1.0)), 0.0)
 
 
 @eqx.filter_jit
@@ -40,25 +73,3 @@ def latin_hypercube_sample(
     u = jr.uniform(u_key, (n, dim))
     x = (perm.T + u) / n
     return x.reshape(shape)
-
-
-@jax.jit
-def rescale(
-    x: Float[Array, "..."],
-    low: Float[Array, "..."],
-    high: Float[Array, "..."],
-) -> Float[Array, "..."]:
-    """Map unit-cube points to the box [low, high]."""
-    return low + x * (high - low)
-
-
-def timed(fn):
-    """Wrap a function to also return its wall time in seconds."""
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        timer = time.perf_counter()
-        out = fn(*args, **kwargs)
-        return out, time.perf_counter() - timer
-
-    return wrapper
