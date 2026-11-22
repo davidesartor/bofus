@@ -1,6 +1,9 @@
 from typing import Protocol, Callable
 from jaxtyping import Float, Array, Scalar
 
+from .ridge import Ridge
+from .projection import Projection
+
 
 class TestFunction(Protocol):
     """Finite functional objective to minimize over f: [-1, 1]^d -> R^k."""
@@ -12,7 +15,3 @@ class TestFunction(Protocol):
     def __call__(self, f: Callable[..., Float[Array, "o"]], **f_kwargs) -> Scalar:
         """Objective value of f, evaluated as f(x, **f_kwargs)."""
         ...
-
-
-from .ridge import Ridge
-from .projection import Projection

@@ -62,27 +62,34 @@ def run(
     """
     key, key_init = jr.split(jr.key(seed))
     d, k = target_fn.d, target_fn.k
+
     # no cap defaults to d: the coverage lengthscale of the prior grows linearly with d
     l_min, l_max = (fixed_l, fixed_l) if fixed_l is not None else l_range
-    l_range = (jnp.asarray(l_min), jnp.asarray(d if l_max is None else l_max, dtype=float))
+    l_max = d if l_max is None else l_max
+    l_range = (jnp.asarray(l_min), jnp.asarray(l_max, dtype=float))
 
     # closed loop control marks inputs folded from (sin, cos) pairs as wrapping
     periodic = getattr(target_fn, "periodic", None)
+    x_range = (-1.0, 1.0)  # targets act on [-1, 1]^d
+
     # rkhs distance at the smallest lengthscale, or L2 on the box
     l0 = jnp.broadcast_to(l_range[0], (d,)) if distance == "rkhs" else None
+
+    # checkpoints record the known optimum of the target, nan if it has none
+    optimum = getattr(target_fn, "optimum", None)
+    optimum = np.nan if optimum is None else optimum
 
     schedule = [1 << s for s in range((m - 1).bit_length())] + [m]
 
     if resume is None:
         # initial design from the mixture prior of the first stage
         shape = (initial_acquisitions, k, schedule[0], d)
-        fs = rkhs.RBFMixture.sample(key_init, shape, l_range, a_range)
-        ys = jnp.asarray(
-            [
-                target_fn(jax.tree.map(lambda z: z[i], fs), periodic=periodic)
-                for i in range(initial_acquisitions)
-            ]
-        )
+        fs = rkhs.RBFMixture.sample(key_init, shape, l_range, a_range, x_range)
+        ys = []
+        for i in range(initial_acquisitions):
+            f = jax.tree.map(lambda z: z[i], fs)
+            ys.append(target_fn(f, x_range=x_range, periodic=periodic))
+        ys = jnp.asarray(ys)
     else:
         # replay the key splits of the acquisitions already made (one per batch)
         fs, ys = resume
@@ -97,7 +104,8 @@ def run(
 
         # inert atoms from the prior, zero amplitude keeps the stored evaluations
         if m_stage > fs.l.shape[-2]:
-            fs = fs.pad_to(jr.fold_in(key_init, m_stage), m_stage, l_range)
+            key_pad = jr.fold_in(key_init, m_stage)
+            fs = fs.pad_to(key_pad, m_stage, l_range, x_range)
 
         while i < stage_end:
             # grow the buffers in powers of two, so each size compiles once
@@ -107,7 +115,13 @@ def run(
             key, key_step = jr.split(key)
             key_fit, key_acq = jr.split(key_step)
             surrogate = gp.GaussianProcess.fit(
-                key_fit, fs, ys, profile=profile, l0=l0, periodic=periodic
+                key_fit,
+                fs,
+                ys,
+                profile=profile,
+                x_range=x_range,
+                l0=l0,
+                periodic=periodic,
             )
             f_batch = acquisition.optimize_expected_improvement(
                 key_acq, surrogate, l_range, a_range, batch_size=batch_size
@@ -117,17 +131,17 @@ def run(
             for j in range(min(batch_size, stage_end - i)):
                 f = jax.tree.map(lambda z: z[j], f_batch)
                 fs = jax.tree.map(lambda z, w: z.at[i].set(w), fs, f)
-                ys = ys.at[i].set(target_fn(f, periodic=periodic))
+                ys = ys.at[i].set(target_fn(f, x_range=x_range, periodic=periodic))
 
                 if verbose:
                     best = jnp.nanmin(ys)
-                    print(f"Iteration {i + 1} (m={m_stage}): current = {ys[i]:.6g}, best = {best:.6g}")
+                    print(
+                        f"Iteration {i + 1} (m={m_stage}): current = {ys[i]:.6g}, best = {best:.6g}"
+                    )
                 i += 1
 
             # checkpoint every few acquisitions so long runs are inspectable mid-flight
             if save_path is not None and (i % checkpoint_every == 0 or i == stage_end):
-                optimum = getattr(target_fn, "optimum", None)
-                optimum = np.nan if optimum is None else optimum
                 np.savez(
                     save_path,
                     l=fs.l[:i],
@@ -177,10 +191,8 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target_fn", choices=list(target_fns.keys()), required=True)
-    parser.add_argument(
-        "--profile", choices=list(profiles_options.keys()), required=True
-    )
+    parser.add_argument("--target_fn", choices=list(target_fns), required=True)
+    parser.add_argument("--profile", choices=list(profiles_options), required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--distance", choices=["rkhs", "l2"], default="rkhs")
     parser.add_argument("--m", type=int, default=16)
@@ -202,7 +214,8 @@ if __name__ == "__main__":
 
     method = "adaptive" if args.fixed_l is None else f"fixed_l{args.fixed_l:g}"
     method = f"ours_{args.distance}_{method}"
-    save_dir = f"{args.results_dir}/{suite_of(args.target_fn)}/{args.target_fn}/{method}/{args.profile}"
+    suite = suite_of(args.target_fn)
+    save_dir = f"{args.results_dir}/{suite}/{args.target_fn}/{method}/{args.profile}"
     os.makedirs(save_dir, exist_ok=True)
     save_path = f"{save_dir}/seed_{args.seed}_m_{args.m}.npz"
 
@@ -213,7 +226,7 @@ if __name__ == "__main__":
             print(f"already complete: {save_path}")
             raise SystemExit(0)
         if len(checkpoint["y"]) >= args.initial_acquisitions:
-            fs = rkhs.RBFMixture(*(jnp.asarray(checkpoint[z]) for z in ("l", "x", "a")))
+            fs = rkhs.RBFMixture(*(jnp.asarray(checkpoint[z]) for z in "lxa"))
             resume = fs, jnp.asarray(checkpoint["y"])
             print(f"resuming from {len(checkpoint['y'])} acquisitions: {save_path}")
 

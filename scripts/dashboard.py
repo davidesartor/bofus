@@ -48,7 +48,7 @@ def evaluate(
     fs: rkhs.RBFMixture, points: Float[Array, "p d"], periodic=None
 ) -> Float[Array, "n o p"]:
     """All candidates at all points."""
-    return jnp.moveaxis(jax.vmap(lambda x: fs(x, periodic=periodic))(points), 0, -1)
+    return jnp.moveaxis(jax.vmap(lambda x: fs(x, (-1.0, 1.0), periodic))(points), 0, -1)
 
 
 def rounded(a) -> list:
@@ -130,7 +130,7 @@ def render_video(name: str, f: rkhs.RBFMixture, path: str) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         target = target_fns[name](n_rollouts=1, video_dir=tmp)
         try:
-            target(f, periodic=getattr(target, "periodic", None))
+            target(f, x_range=(-1.0, 1.0), periodic=getattr(target, "periodic", None))
         except Exception as error:
             tqdm.write(f"video failed for {path}: {error}")
             return False

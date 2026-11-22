@@ -8,7 +8,6 @@ import equinox as eqx
 from vlse.functions.base import TestFunction as Profile
 
 
-
 class Projection:
     """L2 distance between f and the profile min-max rescaled to [-1, 1], via quadrature."""
 

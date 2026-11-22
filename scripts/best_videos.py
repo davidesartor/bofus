@@ -76,7 +76,7 @@ def render(run: dict, out: str, gym_defaults: bool) -> float:
     f = rkhs.RBFMixture(*(jnp.asarray(data[k][run["index"]]) for k in "lxa"))
     with tempfile.TemporaryDirectory() as tmp:
         target = target_fns[run["target"]](n_rollouts=1, video_dir=tmp)
-        value = float(target(f, periodic=getattr(target, "periodic", None)))
+        value = float(target(f, x_range=(-1.0, 1.0), periodic=getattr(target, "periodic", None)))
         shutil.move(sorted(glob.glob(f"{tmp}/*.mp4"))[0], out)
     return value
 

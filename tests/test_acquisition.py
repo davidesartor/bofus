@@ -4,12 +4,15 @@ import jax.random as jr
 import jax.scipy as jsp
 import pytest
 
+from bofus import gp
 from bofus.acquisition import (
     log_expected_improvement,
     log_student_t_expected_improvement,
+    optimize_expected_improvement,
     q_log_expected_improvement,
     upper_confidence_bound,
 )
+from bofus.rkhs import RBFMixture
 
 
 def naive_log_ei(mu, sigma, y_best):
@@ -84,17 +87,14 @@ def test_matches_vmap_over_scalars():
 
 # ---- sampling and optimization over RBF mixtures ----
 
-from bofus import gp, kernels
-from bofus.acquisition import optimize_expected_improvement
-from bofus.rkhs import X_MAX, RBFMixture
-
 L_RANGE = (jnp.array(0.05**2), jnp.array(0.4**2))
 A_RANGE = (jnp.array(-3.0), jnp.array(3.0))
+BOX = (-1.0, 1.0)
 
 
 def sample_functions(key, shape, l_range=L_RANGE):
     """Mixtures from the prior."""
-    return RBFMixture.sample(key, shape, l_range, A_RANGE)
+    return RBFMixture.sample(key, shape, l_range, A_RANGE, BOX)
 
 
 def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
@@ -102,14 +102,12 @@ def make_surrogate(n=8, k=2, m=3, d=2, seed=0):
     fs = sample_functions(key, (n, k, m, d))
     ys = jr.normal(key, (n,))
     l0 = jnp.full(d, L_RANGE[0])
-    return fs, ys, gp.GaussianProcess.fit(key, fs, ys, l0=l0)
+    return fs, ys, gp.GaussianProcess.fit(key, fs, ys, x_range=BOX, l0=l0)
 
 
 def test_optimize_returns_valid_candidate():
     _, ys, surrogate = make_surrogate()
-    best = optimize_expected_improvement(
-        jr.key(3), surrogate, L_RANGE, A_RANGE
-    )
+    best = optimize_expected_improvement(jr.key(3), surrogate, L_RANGE, A_RANGE)
 
     def neg_log_ei(f):
         mu, cov = surrogate.predict_joint(f)
@@ -130,7 +128,9 @@ def test_optimize_with_mixed_constraints():
     fs = sample_functions(jr.key(0), (8, 2, 3, 2))
     ys = jr.normal(jr.key(1), (8,))
     l0 = jnp.full(2, L_RANGE[0])
-    surrogate = gp.GaussianProcess.fit(jr.key(3), fs, ys, l0=l0, periodic=periodic)
+    surrogate = gp.GaussianProcess.fit(
+        jr.key(3), fs, ys, x_range=BOX, l0=l0, periodic=periodic
+    )
     best = optimize_expected_improvement(jr.key(2), surrogate, L_RANGE, A_RANGE)
     assert bool(jnp.isfinite(surrogate.predict_joint(best)[0]).all())
     assert bool(((best.x[..., 0] >= -1.0) & (best.x[..., 0] <= 1.0)).all())
@@ -146,7 +146,9 @@ def test_student_t_ei_matches_quadrature():
         expected = jnp.log(jnp.trapezoid(integrand, t))
         got = log_student_t_expected_improvement(jnp.array(mu), sigma, y_best, dof)
         assert got == pytest.approx(expected, abs=1e-3)
-        grad = jax.grad(log_student_t_expected_improvement)(jnp.array(mu), sigma, y_best, dof)
+        grad = jax.grad(log_student_t_expected_improvement)(
+            jnp.array(mu), sigma, y_best, dof
+        )
         assert bool(jnp.isfinite(grad))
 
 
@@ -154,4 +156,6 @@ def test_student_t_ei_tends_to_gaussian():
     mu = jnp.linspace(-3.0, 1.2, 25)
     sigma, y_best = jnp.array(0.7), jnp.array(0.5)
     t_ei = log_student_t_expected_improvement(mu, sigma, y_best, jnp.array(1e3))
-    assert t_ei == pytest.approx(log_expected_improvement(mu, sigma, y_best), rel=1e-2, abs=1e-2)
+    assert t_ei == pytest.approx(
+        log_expected_improvement(mu, sigma, y_best), rel=1e-2, abs=1e-2
+    )

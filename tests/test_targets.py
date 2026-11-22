@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from vlse import Ackley, GramacyLee, Hartmann3, Michalewicz, Rosenbrock
 
-from test_acquisition import sample_functions
+from test_acquisition import BOX, sample_functions
 import gymnasium as gym
 
 from targets import Projection, Ridge
@@ -31,7 +31,8 @@ def test_values_are_finite_and_above_optimum(target, profile):
     t = target(profile)
     assert (t.d, t.k, t.optimum) == (profile.d, 1, 0.0)
     fs = random_functions(8, t.d)
-    ys = jnp.array([t(jax.tree.map(lambda z: z[i], fs)) for i in range(8)])
+    fs = [jax.tree.map(lambda z: z[i], fs) for i in range(8)]
+    ys = jnp.array([t(f, x_range=BOX) for f in fs])
     assert bool(jnp.isfinite(ys).all())
     assert bool((ys >= t.optimum).all())
 
@@ -68,9 +69,9 @@ def test_control_tasks_are_finite_and_deterministic(env_id, d, k):
     t = ENVS[env_id](n_rollouts=2)
     assert (t.d, t.k, t.optimum) == (d, k, None)
     f = jax.tree.map(lambda z: z[0], random_functions(1, d, k=k))
-    y = t(f)
+    y = t(f, x_range=BOX)
     assert bool(jnp.isfinite(y))
-    assert float(y) == float(t(f))
+    assert float(y) == float(t(f, x_range=BOX))
 
 
 @pytest.mark.parametrize(
@@ -80,9 +81,9 @@ def test_open_loop_tasks_are_finite_and_deterministic(env_id, k):
     t = ENVS[env_id](n_rollouts=2, open_loop=True)
     assert (t.d, t.k, t.optimum) == (1, k, None)
     f = jax.tree.map(lambda z: z[0], random_functions(1, 1, k=k))
-    y = t(f)
+    y = t(f, x_range=BOX)
     assert bool(jnp.isfinite(y))
-    assert float(y) == float(t(f))
+    assert float(y) == float(t(f, x_range=BOX))
 
 
 def first_policy_input(t) -> np.ndarray:
@@ -124,4 +125,6 @@ def test_angle_pairs_fold_into_periodic_inputs(env_id, inputs, angles):
     assert bool(((z >= -1.0) & (z <= 1.0)).all())
     for (s, c), i in zip(angles, np.flatnonzero(t.periodic)):
         angle = np.pi * z[i]
-        np.testing.assert_allclose([np.sin(angle), np.cos(angle)], [obs[s], obs[c]], atol=1e-5)
+        np.testing.assert_allclose(
+            [np.sin(angle), np.cos(angle)], [obs[s], obs[c]], atol=1e-5
+        )

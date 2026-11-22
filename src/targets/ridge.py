@@ -59,7 +59,11 @@ class Ridge:
 
     def weights_at(self, x: Float[Array, "n d"]) -> Float[Array, "d n"]:
         """Mapped over points: the (d, modes, n) cosines were 768 MiB on the michalewicz grid."""
-        w_at = lambda xi: jnp.einsum("im,im->i", self.c, jnp.cos(2 * jnp.pi * self.modes @ xi + self.phi))
+
+        def w_at(xi: Float[Array, "d"]) -> Float[Array, "d"]:
+            cosines = jnp.cos(2 * jnp.pi * self.modes @ xi + self.phi)
+            return jnp.einsum("im,im->i", self.c, cosines)
+
         return jax.lax.map(w_at, x, batch_size=1024).T
 
     @eqx.filter_jit

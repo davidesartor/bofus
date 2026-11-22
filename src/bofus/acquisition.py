@@ -9,6 +9,7 @@ import vlse.optim
 
 from . import rkhs, gp, utils
 
+
 @jax.jit
 def upper_confidence_bound(
     mu: Float[Array, "..."],
@@ -45,12 +46,14 @@ def log_student_t_expected_improvement(
 
     # z > -1: direct
     z1 = jnp.where(upper, z, 0.0)
-    log_h1 = jnp.log(z1 * student_t_cdf(z1, dof) + jnp.exp(jnp.where(upper, log_A_pdf, 0.0)))
+    log_A_pdf1 = jnp.where(upper, log_A_pdf, 0.0)
+    log_h1 = jnp.log(z1 * student_t_cdf(z1, dof) + jnp.exp(log_A_pdf1))
 
     # z <= -1: A * pdf - |z| * cdf in log space
     z2 = jnp.where(upper, -2.0, z)
     log_A_pdf2 = jnp.where(upper, 0.0, log_A_pdf)
-    log_h2 = log_A_pdf2 + jax.nn.log1mexp(log_A_pdf2 - jnp.log(-z2) - jnp.log(student_t_cdf(z2, dof)))
+    log_ratio = log_A_pdf2 - jnp.log(-z2) - jnp.log(student_t_cdf(z2, dof))
+    log_h2 = log_A_pdf2 + jax.nn.log1mexp(log_ratio)
 
     return jnp.log(sigma) + jnp.where(upper, log_h1, log_h2)
 
@@ -67,7 +70,8 @@ def log_expected_improvement(
 
     # sanitize inputs for the three branches to avoid NaNs and Infs in gradients
     z = (y_best - mu) / sigma
-    z_asymptotic = -jnp.finfo(z.dtype).eps ** -0.25
+    EPS = utils.eps(z.dtype)
+    z_asymptotic = -(EPS**-0.25)
     upper, lower = z > -1, z < z_asymptotic
 
     # branch1 (z > -1): direct evaluation
@@ -136,9 +140,10 @@ def boltzmann_select(
     eta: float = 2.0,
 ) -> Int[Array, "n"]:
     """Sample n distinct indices with weights exp(eta * standardized values), keeping the argmax."""
+    EPS = utils.eps(values.dtype)
     finite = jnp.isfinite(values)
     v = jnp.where(finite, values, jnp.nan)
-    z = (v - jnp.nanmean(v)) / jnp.maximum(jnp.nanstd(v), jnp.finfo(v.dtype).eps)
+    z = (v - jnp.nanmean(v)) / jnp.maximum(jnp.nanstd(v), EPS)
     logits = jnp.where(finite, eta * z, -jnp.inf).at[jnp.nanargmax(v)].set(jnp.inf)
 
     # gumbel top-k is sampling without replacement
@@ -150,8 +155,8 @@ def boltzmann_select(
 def optimize_expected_improvement(
     key: Key,
     surrogate: gp.GaussianProcess,
-    l_range: tuple[Scalar, Scalar],
-    a_range: tuple[Scalar, Scalar],
+    l_range: rkhs.LRange,
+    a_range: rkhs.ARange,
     batch_size: int = 1,
     multi_starts: int = 32,
     n_probes: int = 1024,
@@ -166,11 +171,17 @@ def optimize_expected_improvement(
 ) -> rkhs.RBFMixture["q o m d"]:
     """Maximize Monte Carlo batch EI over RBF mixtures, screening probe batches then L-BFGS-B."""
     _, o, m, d = surrogate.f.l.shape
-    x_range = (jnp.asarray(-rkhs.X_MAX), jnp.asarray(rkhs.X_MAX))
+    dtype = surrogate.y.dtype
+    EPS = utils.eps(dtype)
+    l_range, a_range, x_range = (
+        tuple(jnp.asarray(z, dtype) for z in r)
+        for r in (l_range, a_range, surrogate.x_range)
+    )
     mask = jnp.isfinite(surrogate.y)
 
-    log_l_range = (jnp.log(l_range[0]), jnp.log(l_range[1]))
-    bounds = tuple(zip(log_l_range, x_range, a_range))
+    # the search runs over (log_l, x, a), each within its box
+    lo = (jnp.log(l_range[0]), x_range[0], a_range[0])
+    hi = (jnp.log(l_range[1]), x_range[1], a_range[1])
 
     def mixture(log_l, x, a) -> rkhs.RBFMixture["... m d"]:
         return rkhs.RBFMixture(jnp.exp(log_l), x, a)
@@ -179,34 +190,40 @@ def optimize_expected_improvement(
     mu_obs, _ = surrogate.predict_marginal(surrogate.f)
     y_best = jnp.where(mask, mu_obs, jnp.inf).min()
 
-    # half the probe batches draw from the prior, half perturb the n_best observed points
+    # half the probe batches draw from the prior
     key_cover, key_center, key_perturb, key_select, key_mc = jr.split(key, 5)
     n_cover = n_probes // 2
     n_around = n_probes - n_cover
-    cover = rkhs.RBFMixture.sample(key_cover, (n_cover, batch_size, o, m, d), l_range, a_range)
+    cover = rkhs.RBFMixture.sample(
+        key_cover, (n_cover, batch_size, o, m, d), l_range, a_range, x_range
+    )
+    cover = (jnp.log(cover.l), cover.x, cover.a)
+
+    # the other half start from the n_best observed points
     order = jnp.argsort(jnp.where(mask, surrogate.y, jnp.inf))
     n_top = jnp.minimum(n_best, mask.sum())
     center = order[jr.randint(key_center, (n_around, batch_size), 0, n_top)]
     around = jax.tree.map(lambda z: z[center], surrogate.f)
+    around = (jnp.log(around.l), around.x, around.a)
 
     # gaussian perturbation of (log_l, x, a) relative to each range, clipped to the box
-    perturb = lambda k, z, lo, hi: (
-        z + sigma_around_best * (hi - lo) * jr.normal(k, z.shape)
-    ).clip(lo, hi)
-    around = (jnp.log(around.l), around.x, around.a)
-    around = jax.tree.map(perturb, tuple(jr.split(key_perturb, 3)), around, *bounds)
-    cover = (jnp.log(cover.l), cover.x, cover.a)
+    def perturb(k, z, z_lo, z_hi):
+        noise = sigma_around_best * (z_hi - z_lo) * jr.normal(k, z.shape)
+        return (z + noise).clip(z_lo, z_hi)
+
+    around = jax.tree.map(perturb, tuple(jr.split(key_perturb, 3)), around, lo, hi)
     probes = jax.tree.map(lambda *zs: jnp.concatenate(zs), cover, around)
 
     # stratified normal draws, fixed so the Monte Carlo objective is deterministic
-    tiny = jnp.finfo(surrogate.y.dtype).eps
     u = utils.latin_hypercube_sample(key_mc, (n_mc, batch_size))
-    eps = jsp.special.ndtri(u.clip(tiny, 1.0 - tiny))
+    eps = jsp.special.ndtri(u.clip(EPS, 1.0 - EPS))
 
     # student-t draws share one chi-square scale per sample across the batch
     if surrogate.dof is not None:
         chi2 = jr.chisquare(jr.fold_in(key_mc, 1), surrogate.dof, (n_mc,))
         eps = eps * jnp.sqrt(surrogate.dof / chi2)[:, None]
+
+    # relu temperature relative to the posterior scale
     tau_relu = 1e-6 * jnp.sqrt(surrogate.nu)
 
     # analytic log EI for a single point, MC batch log EI else
@@ -227,7 +244,9 @@ def optimize_expected_improvement(
     starts = jax.tree.map(lambda z: z[starts], probes)
 
     # box constrained L-BFGS-B from each start, mapped since vmap runs every start to the slowest
-    solve = lambda lxa: vlse.optim.minimise(loss, lxa, bounds=bounds, tol=gtol, ftol=ftol)
+    def solve(lxa):
+        return vlse.optim.minimise(loss, lxa, bounds=(lo, hi), tol=gtol, ftol=ftol)
+
     results = jax.lax.map(solve, starts, batch_size=solve_chunk)
 
     # return the batch with the best Monte Carlo EI

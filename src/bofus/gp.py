@@ -15,13 +15,17 @@ from . import kernels, rkhs, utils
 def factorize(
     K: Float[Array, "n n"],
     y: Float[Array, "n"],
-) -> tuple[Float[Array, "n n"], Float[Array, "n"], Float[Array, "n"], Scalar, Scalar]:
-    """Cholesky factor and solves of K, with the trend b and the REML scale nu.
+) -> tuple[
+    Float[Array, "n n"], Float[Array, "n"], Float[Array, "n"], Scalar, Scalar, Scalar
+]:
+    """Cholesky factor and solves of K, with the trend b, the REML scale nu and its dof.
     A nan observation marks padding, masked to an identity block of the factor.
     """
+    EPS, TINY = utils.eps(y.dtype), utils.tiny(y.dtype)
+
     # mask the covariance matrix and observations
     mask = jnp.isfinite(y)
-    dof = jnp.maximum(mask.sum() - 1, 1)
+    dof = jnp.maximum(mask.sum() - 1, 1).astype(y.dtype)
     K = utils.mask_covariance(K, mask)
     y = jnp.where(mask, y, 0.0)
 
@@ -35,9 +39,9 @@ def factorize(
     nu = jnp.sum(jnp.where(mask, (y - b) * Ki_r, 0.0)) / dof
 
     # constant observations give nu = 0, floor it at their float resolution
-    resolution = jnp.finfo(y.dtype).eps * jnp.max(jnp.abs(y))
-    nu = jnp.maximum(nu, jnp.maximum(resolution**2, jnp.finfo(y.dtype).tiny))
-    return K_chol, Ki_1, Ki_r, b, nu
+    resolution = EPS * jnp.max(jnp.abs(y))
+    nu = jnp.maximum(nu, jnp.maximum(resolution**2, TINY))
+    return K_chol, Ki_1, Ki_r, b, nu, dof
 
 
 @jax.jit
@@ -47,8 +51,7 @@ def loglikelihood(
     nu: Scalar | None = None,
 ) -> Scalar:
     """REML likelihood: trend integrated out under a flat prior, scale nu concentrated unless given."""
-    K_chol, Ki_1, _, _, nu_hat = factorize(K, y)
-    dof = jnp.maximum(jnp.isfinite(y).sum() - 1, 1)
+    K_chol, Ki_1, _, _, nu_hat, dof = factorize(K, y)
     logdetK = 2.0 * jnp.sum(jnp.log(jnp.diag(K_chol))) + jnp.log(Ki_1.sum())
     if nu is None:
         return -0.5 * (dof * jnp.log(nu_hat) + logdetK)
@@ -59,6 +62,7 @@ def loglikelihood(
 @eqx.filter_jit
 def pairwise_squared_distance(
     l0: Float[Array, "d"] | None,
+    x_range: rkhs.XRange,
     f1: rkhs.RBFMixture["n1 o m d"],
     f2: Optional[rkhs.RBFMixture["n2 o m d"]] = None,
     periodic: tuple[bool, ...] | None = None,
@@ -71,7 +75,7 @@ def pairwise_squared_distance(
 
     f1 = jax.tree.map(lambda z: z[:, None], f1)
     f2 = jax.tree.map(lambda z: z[None, :], f2)
-    d2 = rkhs.distance(f1, f2, l0, periodic) ** 2
+    d2 = rkhs.distance(f1, f2, l0, x_range, periodic) ** 2
 
     # floating point arithmetic is not guaranteed to cancel out
     if should_fill_diag:
@@ -85,6 +89,7 @@ class GaussianProcess(NamedTuple):
 
     profile: kernels.Profile  # kernel profile, e.g. RBF or Matern
     l0: Float[Array, "d"] | None  # ambient lengthscale, None for L2
+    x_range: rkhs.XRange  # input box (lo, hi)
     periodic: tuple[bool, ...] | None  # dimensions that wrap, static; None for none
 
     # fitted parameters
@@ -112,6 +117,7 @@ class GaussianProcess(NamedTuple):
         *,
         y_std: Optional[Float[Array, "n"]] = None,
         profile: kernels.Profile = kernels.matern52,
+        x_range: rkhs.XRange,
         l0: Optional[Float[Array, "d"]] = None,
         periodic: tuple[bool, ...] | None = None,
         rho_range: Float[Array, "2"] = jnp.array([1e-2, 1e2]),
@@ -124,7 +130,7 @@ class GaussianProcess(NamedTuple):
 
         # squared distances per output, constant throughout the optimisation
         mask = jnp.isfinite(y)
-        d2 = pairwise_squared_distance(l0, f, periodic=periodic)
+        d2 = pairwise_squared_distance(l0, x_range, f, periodic=periodic)
 
         # center rho to average inverse distances
         valid = (mask[:, None] & mask[None, :])[..., None] & jnp.isfinite(d2)
@@ -134,13 +140,15 @@ class GaussianProcess(NamedTuple):
         # known measurement variances, zeroed on padding so nan never reaches the gradients
         noise = None if y_std is None else jnp.where(mask, y_std, 0.0) ** 2
 
-        def covariance(rho: Float[Array, "o"], g: Scalar, nu: Scalar | None) -> Float[Array, "n n"]:
+        def covariance(
+            rho: Float[Array, "o"], g: Scalar, nu: Scalar | None
+        ) -> Float[Array, "n n"]:
             K = profile(utils.safe_sqrt(d2 @ rho)) + g * jnp.eye(n)
             return K if nu is None else K + jnp.diag(noise / nu)
 
         # center the nu search on the noiseless closed form at the box center
         g_center = jnp.sqrt(jnp.prod(nugget_range))
-        nu_scale = factorize(covariance(rho_scale, g_center, None), y)[-1]
+        *_, nu_scale, _ = factorize(covariance(rho_scale, g_center, None), y)
 
         def unpack(log_params: tuple[Float[Array, "..."], ...]) -> tuple:
             log_rho, log_g, *log_nu = log_params
@@ -155,7 +163,7 @@ class GaussianProcess(NamedTuple):
 
         def map_loss(log_params: tuple[Float[Array, "..."], ...]) -> Scalar:
             rho, g, nu = unpack(log_params)
-            z = jax.tree.map(lambda u, m, s: (u - m) / s, log_params[:2], prior_mean, prior_std)
+            z = [(u - m) / s for u, m, s in zip(log_params[:2], prior_mean, prior_std)]
             neg_log_prior = 0.5 * sum(jnp.sum(zi**2) for zi in z)
             return -loglikelihood(covariance(rho, g, nu), y, nu) + neg_log_prior
 
@@ -163,7 +171,8 @@ class GaussianProcess(NamedTuple):
         shapes = ((restarts, o), (restarts,), (restarts,))
         keys = jr.split(key, len(ranges))
         starts = tuple(
-            jr.uniform(k, s, minval=a, maxval=b) for k, s, a, b in zip(keys, shapes, lo, hi)
+            jr.uniform(k, s, minval=a, maxval=b)
+            for k, s, a, b in zip(keys, shapes, lo, hi)
         )
 
         solve = lambda start: optim.minimise(map_loss, start, bounds=(lo, hi))
@@ -176,12 +185,11 @@ class GaussianProcess(NamedTuple):
         rho, g, nu = unpack(jax.tree.map(lambda z: z[best], results.x))
 
         # condition on the observations, caching the solves predict needs
-        K_chol, Ki_1, Ki_r, b, nu_hat = factorize(covariance(rho, g, nu), y)
-        # integrating nu out leaves a student-t with n - 1 dof
-        dof = None if nu is not None else jnp.maximum(mask.sum() - 1, 1).astype(y.dtype)
-        nu = nu_hat if nu is None else nu
+        K_chol, Ki_1, Ki_r, b, nu_hat, dof = factorize(covariance(rho, g, nu), y)
+        # integrating nu out leaves a student-t with n - 1 dof, a known nu a gaussian
+        nu, dof = (nu_hat, dof) if nu is None else (nu, None)
         return GaussianProcess(
-            profile, l0, periodic, rho, g, nu, dof, b, f, y, K_chol, Ki_1, Ki_r
+            profile, l0, x_range, periodic, rho, g, nu, dof, b, f, y, K_chol, Ki_1, Ki_r
         )
 
     @eqx.filter_jit
@@ -189,10 +197,14 @@ class GaussianProcess(NamedTuple):
         self, f: rkhs.RBFMixture["q o m d"]
     ) -> tuple[Float[Array, "q"], Float[Array, "q q"]]:
         """Posterior location and scale at f, student-t with self.dof dof (gaussian if None)."""
-        # cancellation only approximates the exact zeros of coincident functions
-        dist = lambda *fs: utils.safe_sqrt(
-            pairwise_squared_distance(self.l0, *fs, periodic=self.periodic) @ self.rho
-        )
+
+        def dist(*fs: rkhs.RBFMixture) -> Float[Array, "n1 n2"]:
+            d2 = pairwise_squared_distance(
+                self.l0, self.x_range, *fs, periodic=self.periodic
+            )
+            # cancellation only approximates the exact zeros of coincident functions
+            return utils.safe_sqrt(d2 @ self.rho)
+
         Kqq = self.profile(dist(f))
         Knq = self.profile(dist(self.f, f))
 
