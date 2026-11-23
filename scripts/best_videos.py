@@ -1,6 +1,7 @@
 """Render each gym problem's best policy, open or closed loop, at full resolution next to the dashboard."""
 
 import argparse
+import base64
 import functools
 import glob
 import json
@@ -76,7 +77,9 @@ def render(run: dict, out: str, gym_defaults: bool) -> float:
     f = rkhs.RBFMixture(*(jnp.asarray(data[k][run["index"]]) for k in "lxa"))
     with tempfile.TemporaryDirectory() as tmp:
         target = target_fns[run["target"]](n_rollouts=1, video_dir=tmp)
-        value = float(target(f, x_range=(-1.0, 1.0), periodic=getattr(target, "periodic", None)))
+        value = float(
+            target(f, x_range=(-1.0, 1.0), periodic=getattr(target, "periodic", None))
+        )
         shutil.move(sorted(glob.glob(f"{tmp}/*.mp4"))[0], out)
     return value
 
@@ -109,19 +112,14 @@ const DATA = /*DATA*/{};
 const grid = document.getElementById("grid");
 for (const run of DATA.runs) {
   grid.insertAdjacentHTML("beforeend", `<figure>
-    <video data-src="${run.video}" autoplay muted loop playsinline controls></video>
-    <figcaption><b>${run.env}</b><br><span>${run.loop} loop · ${run.method} · seed ${run.seed} ·
+    <video autoplay muted loop playsinline controls></video>
+    <figcaption><b>${run.env}</b><br><span>${run.loop} loop · ${run.method} · m ${run.m} · seed ${run.seed} ·
       acquisition ${run.index + 1} · objective ${run.y.toPrecision(4)}</span></figcaption></figure>`);
-}
-// VS Code's preview frame cannot load local media, so there the outer frame fetches each video as a blob
-const inPreview = !/^(file|https?):$/.test(location.protocol) && DATA.root;
-for (const video of grid.querySelectorAll("video[data-src]")) {
-  const rel = video.dataset.src;
-  const failed = error => video.outerHTML = `<div class="empty">video failed: ${error} (${rel})</div>`;
-  if (!inPreview) { video.src = rel; video.onerror = () => failed(video.error?.message); continue; }
-  window.parent.fetch(`https://file+.vscode-resource.vscode-cdn.net${encodeURI(DATA.root)}/${encodeURI(rel)}`)
-    .then(r => r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then(blob => video.src = URL.createObjectURL(new Blob([blob], { type: "video/mp4" })), failed);
+  // videos are embedded as base64 and played from blobs, which VS Code's preview also allows
+  const video = grid.lastElementChild.querySelector("video");
+  const bytes = Uint8Array.from(atob(run.mp4), c => c.charCodeAt(0));
+  video.src = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+  video.onerror = () => video.outerHTML = `<div class="empty">video failed: ${video.error?.message} (${run.env})</div>`;
 }
 </script>
 </body>
@@ -131,7 +129,7 @@ for (const video of grid.querySelectorAll("video[data-src]")) {
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", default="results/sweep")
+    parser.add_argument("--results_dir", default="results/tbd/sweep")
     parser.add_argument(
         "--gym_defaults",
         action="store_true",
@@ -161,8 +159,14 @@ if __name__ == "__main__":
             run["rollout"] = futures[run["env"]].result()
             print(f"{run['env']}: logged {run['y']:.4g}, rollout {run['rollout']:.4g}")
 
-    data = dict(runs=runs, root=os.path.abspath(args.results_dir))
+    for run in runs:
+        with open(os.path.join(args.results_dir, run["video"]), "rb") as f:
+            run["mp4"] = base64.b64encode(f.read()).decode()
+    data = dict(runs=runs)
+
+    # written next to the page and renamed, so a reader never sees a half-written page
     out = os.path.join(args.results_dir, "best_videos.html")
-    with open(out, "w") as f:
+    with open(out + ".tmp", "w") as f:
         f.write(PAGE.replace("/*DATA*/{}", json.dumps(data)))
+    os.replace(out + ".tmp", out)
     print(f"{len(runs)} videos -> {out}")

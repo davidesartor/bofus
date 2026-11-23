@@ -22,6 +22,11 @@ def make_functions(n: int, m: int = M, d: int = D, k: int = K, seed: int = 0):
     return fs, ys
 
 
+def box(d: int):
+    """The box weight in d dimensions."""
+    return rkhs.box_weight(BOX, d)
+
+
 def fit(fs, ys, **kw):
     _, o, _, d = fs.l.shape
     l0 = jnp.full(d, L_RANGE[0])
@@ -46,7 +51,7 @@ def test_posterior_interpolates_observations():
 
 
 def test_l2_posterior_interpolates_observations():
-    """Without an atom lengthscale range the GP compares functions in L2 on the box."""
+    """Without an atom lengthscale range the GP compares functions in L2 on the line."""
     fs, ys = make_functions(8, seed=1)
     fitted = gp.GaussianProcess.fit(
         jr.key(0), fs, ys, x_range=BOX, nugget_range=jnp.array([1e-6, 1e-4])
@@ -57,13 +62,46 @@ def test_l2_posterior_interpolates_observations():
     assert bool((jnp.diag(cov) >= -1e-8).all())
 
 
+def test_box_rho_scales_the_box_distance():
+    """Box-weight atoms in rho multiply each output's distance by their total amplitude."""
+    fs, _ = make_functions(8, d=2, k=2, seed=1)
+    l0 = jnp.full(2, L_RANGE[0])
+    rho = rkhs.RBFMixture(
+        jnp.full((2, 3, 2), (BOX[1] - BOX[0]) ** 2),
+        jnp.full((2, 3, 2), (BOX[0] + BOX[1]) / 2),
+        jnp.array([[1.0, 2.0, 0.5], [0.1, 0.2, 0.3]]),
+    )
+    weighted = gp.pairwise_squared_distance(l0, BOX, fs, rho=rho)
+    unweighted = gp.pairwise_squared_distance(l0, BOX, fs, rho=box(2))
+    np.testing.assert_allclose(weighted, unweighted * rho.a.sum(-1), rtol=1e-6)
+
+
+def test_single_atom_fit_uses_the_box_weight():
+    """n_atoms=1 fits one amplitude per output on the box weight."""
+    fs, ys = make_functions(8, d=2, k=2, seed=1)
+    rho = fit(fs, ys).rho
+    np.testing.assert_allclose(rho.l, jnp.broadcast_to(box(2).l, (2, 1, 2)))
+    np.testing.assert_allclose(rho.x, jnp.broadcast_to(box(2).x, (2, 1, 2)))
+
+
+def test_fitted_rho_basis_interpolates():
+    """A many-atom basis, shared across outputs with amplitudes per output, still interpolates."""
+    fs, ys = make_functions(8, d=2, k=2, seed=1)
+    fitted = fit(fs, ys, n_atoms=16, nugget_range=jnp.array([1e-6, 1e-4]))
+    assert fitted.rho.l.shape == fitted.rho.x.shape == (2, 16, 2)
+    np.testing.assert_array_equal(fitted.rho.l[0], fitted.rho.l[1])
+    assert not np.allclose(fitted.rho.a[0], fitted.rho.a[1])
+    mean, _ = fitted.predict_joint(fs)
+    np.testing.assert_allclose(mean, ys, atol=1e-2)
+
+
 def test_per_dimension_ambient_lengthscale():
     """An uneven per-dimension l0 changes the geometry and still fits."""
     fs, ys = make_functions(8, d=2, seed=1)
     constant_l0 = jnp.full(2, L_RANGE[0])
     uneven_l0 = L_RANGE[0] * jnp.array([1.0, 0.5])
-    constant = gp.pairwise_squared_distance(constant_l0, BOX, fs)
-    uneven = gp.pairwise_squared_distance(uneven_l0, BOX, fs)
+    constant = gp.pairwise_squared_distance(constant_l0, BOX, fs, rho=box(2))
+    uneven = gp.pairwise_squared_distance(uneven_l0, BOX, fs, rho=box(2))
     assert not np.allclose(uneven, constant, rtol=1e-3)
 
     fitted = gp.GaussianProcess.fit(
@@ -91,9 +129,8 @@ def test_padded_observations_are_inert():
     fitted = fit(fs, ys)
 
     def loglik(l0, f, y):
-        K = fitted.profile(
-            gp.utils.safe_sqrt(gp.pairwise_squared_distance(l0, BOX, f) @ fitted.rho)
-        )
+        d2 = gp.pairwise_squared_distance(l0, BOX, f, rho=fitted.rho)
+        K = fitted.profile(gp.utils.safe_sqrt(d2.sum(-1)))
         return gp.loglikelihood(K + fitted.g * jnp.eye(len(y)), y)
 
     value_and_grad = jax.value_and_grad(loglik)
@@ -168,8 +205,8 @@ def test_fitted_rho_downweights_uninformative_output():
     fs, _ = make_functions(n, m=m, d=d, k=k, seed=5)
     ys = fs(jnp.full(d, 0.5), BOX)[:, 0]
 
-    fitted = fit(fs, ys)
-    assert float(fitted.rho[0]) > 2.0 * float(fitted.rho[1])
+    rho = fit(fs, ys).rho.a.sum(-1)
+    assert float(rho[0]) > 2.0 * float(rho[1])
 
 
 def test_negligible_y_std_matches_noiseless_fit():

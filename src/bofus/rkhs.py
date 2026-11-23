@@ -9,8 +9,6 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax.scipy.special import erf
 
-from . import utils
-
 # (lo, hi) of the input box, of the squared lengthscales and of the amplitudes
 XRange = tuple[float | Float[Array, "d"], float | Float[Array, "d"]]
 LRange = tuple[float | Float[Array, "d"], float | Float[Array, "d"]]
@@ -131,61 +129,81 @@ def log_rbf(
     return line + jnp.sum(circle, axis=-1)
 
 
+def box_weight(x_range: XRange, d: int) -> RBFMixture["1 d"]:
+    """One unit gaussian centred on the box with std its width."""
+    lo, hi = (jnp.broadcast_to(jnp.asarray(z, float), (d,)) for z in x_range)
+    return RBFMixture(((hi - lo) ** 2)[None], ((lo + hi) / 2)[None], jnp.ones(1))
+
+
 @eqx.filter_jit
 def inner(
     f1: RBFMixture["*b m1 d"],
     f2: RBFMixture["*b m2 d"],
     l0: Float[Array, "d"] | None,
     x_range: XRange,
+    weight: RBFMixture["*b w d"],
     periodic: tuple[bool, ...] | None = None,
 ) -> Float[Array, "*b"]:
-    """Inner product in the rkhs of phi(.; l0) on the box x_range, in L2 if l0 is None.
-    RBF are analytic, so the rkhs inner product on the box is an isometry of the one on the line.
-    See Steinwart, Hush, Scovel 2006, https://doi.org/10.1109/TIT.2006.881713
-    The L2 inner product is scaled by 1 / sqrt(2 pi) per dimension.
+    """L2 inner product on the line of f1 w f2, scaled by 1 / sqrt(2 pi) per dimension.
+    With l0 the atoms are deconvolved (variance l - l0 / 2), so a flat w gives the rkhs inner
+    product of phi(.; l0), an isometry of the one on the box for analytic RBFs (Steinwart, Hush,
+    Scovel 2006, https://doi.org/10.1109/TIT.2006.881713). w is flat where its l is inf and on
+    periodic dims, whose periods x_range sets.
     """
-    TINY = utils.tiny(f1.x.dtype)
-    lo, hi = x_range
-
-    # atom pairs on (*b, m, n, d)
-    l1, x1 = f1.l[..., :, None, :], f1.x[..., :, None, :]
-    l2, x2 = f2.l[..., None, :, :], f2.x[..., None, :, :]
     wraps = np.zeros(f1.x.shape[-1], bool) if periodic is None else np.asarray(periodic)
 
-    if l0 is None:  # L2 inner product, scaled by 1 / sqrt(2 pi)^d
-        # box dimensions keep only the mass of each atom product N(mu, s) inside [lo, hi]
-        ls = l1 + l2
-        mu = (l2 * x1 + l1 * x2) / ls
-        root_2s = jnp.sqrt(2.0 * l1 * l2 / ls)
-        mass = 0.5 * (erf((hi - mu) / root_2s) - erf((lo - mu) / root_2s))
-        mass = jnp.maximum(mass, TINY)  # finite log for atoms off the box
-        log_scale = 0.5 * jnp.log(l1 * l2 / ls) + jnp.where(wraps, 0.0, jnp.log(mass))
-        valid = True
+    if l0 is None:  # L2 inner product of the atoms themselves
+        u1, u2, half_log_l0, valid = f1.l, f2.l, 0.0, True
     else:
-        # deconvolved atom variances, patched where an atom does not fit the ambient rkhs
-        v1 = l1 - l0 / 2
-        v2 = l2 - l0 / 2
-        valid = jnp.all((v1 > 0.0) & (v2 > 0.0), axis=(-3, -2, -1))
-        ls = jnp.where(v1 > 0.0, v1, 1.0) + jnp.where(v2 > 0.0, v2, 1.0)
-        log_scale = 0.5 * jnp.log(l1 * l2 / (l0 * ls))
+        # deconvolved atoms, patched where an atom does not fit the ambient rkhs
+        v1, v2 = f1.l - l0 / 2, f2.l - l0 / 2
+        valid = jnp.all(v1 > 0.0, axis=(-2, -1)) & jnp.all(v2 > 0.0, axis=(-2, -1))
+        u1, u2 = jnp.where(v1 > 0.0, v1, 1.0), jnp.where(v2 > 0.0, v2, 1.0)
+        half_log_l0 = 0.5 * jnp.sum(jnp.log(l0))
 
-    # inner kernel matrix, infinite if any atom falls outside the ambient rkhs
-    K = jnp.exp(jnp.sum(log_scale, axis=-1) + log_rbf(x1 - x2, ls, x_range, periodic))
+    # per-atom part of the log scale 0.5 log(l1 l2 / (l0 E)), where u cancels; -0.5 log E is per dim
+    half_log_l1 = 0.5 * jnp.sum(jnp.log(f1.l), axis=-1)[..., :, None]
+    half_log_l2 = 0.5 * jnp.sum(jnp.log(f2.l), axis=-1)[..., None, :]
+    log_norm = half_log_l1 + half_log_l2 - half_log_l0
+
+    # weight precision r, zero where flat or periodic so those dims reduce to the plain rbf
+    r = jnp.where(wraps, 0.0, 1.0 / weight.l)[..., None, None, :, :]
+    z = weight.x[..., None, None, :, :]
+
+    # each atom pair against each weight atom on (*b, m1, m2, w, d), one log and one divide each
+    u1, x1 = u1[..., :, None, None, :], f1.x[..., :, None, None, :]
+    u2, x2 = u2[..., None, :, None, :], f2.x[..., None, :, None, :]
+    ls, dx = u1 + u2, x1 - x2
+    E = ls + r * u1 * u2
+    spread = r * (u1 * (x2 - z) ** 2 + u2 * (x1 - z) ** 2) + jnp.where(
+        wraps, 0.0, dx**2
+    )
+    log_K = jnp.sum(-0.5 * jnp.log(E) - 0.5 * spread / E, axis=-1)
+    if wraps.any():  # periodic dims go through log_rbf
+        dx_wraps = jnp.where(wraps, dx[..., 0, :], 0.0)
+        log_K = log_K + log_rbf(dx_wraps, ls[..., 0, :], x_range, periodic)[..., None]
+
+    # atom-pair matrix summed over the weight atoms, inf if any atom falls outside the ambient rkhs
+    K = jnp.sum(
+        jnp.exp(log_norm[..., None] + log_K) * weight.a[..., None, None, :], axis=-1
+    )
     k = jnp.einsum("...ij,...i,...j->...", K, f1.a, f2.a)
     return jnp.where(valid, k, jnp.inf)
 
 
 @eqx.filter_jit
-def distance(
+def squared_distance(
     f1: RBFMixture["*b m1 d"],
     f2: RBFMixture["*b m2 d"],
     l0: Float[Array, "d"] | None,
     x_range: XRange,
+    weight: RBFMixture["*b w d"],
     periodic: tuple[bool, ...] | None = None,
 ) -> Float[Array, "*b"]:
-    """Distance between RBF mixtures in the rkhs of phi(.; l0), in L2 on the box if l0 is None."""
-    norms = inner(f1, f1, l0, x_range, periodic) + inner(f2, f2, l0, x_range, periodic)
-    d2 = norms - 2.0 * inner(f1, f2, l0, x_range, periodic)
-    is_undefined = jnp.isinf(d2) | jnp.isnan(d2)  # inf - inf gives nan
-    d2 = jnp.where(is_undefined, jnp.inf, d2)
-    return utils.safe_sqrt(d2)
+    """Squared distance between RBF mixtures under the weighted inner product of inner.
+    Broadcasts over *b, each norm computed at its own batch shape.
+    """
+    product = lambda a, b: inner(a, b, l0, x_range, weight, periodic)
+    d2 = product(f1, f1) + product(f2, f2) - 2.0 * product(f1, f2)
+    # inf - inf gives nan, cancellation can dip below zero
+    return jnp.where(jnp.isfinite(d2), jnp.where(d2 > 0.0, d2, 0.0), jnp.inf)

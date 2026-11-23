@@ -251,7 +251,7 @@ PAGE = r"""<!doctype html>
     color-scheme: light;
     --surface-0: #f4f4f2; --surface-1: #fcfcfb; --border: #e2e1dc; --grid: #ecebe7; --axis: #b9b8b1;
     --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4;
     --neutral-mid: #ebeae6; --reference: #52514e;
   }
   @media (prefers-color-scheme: dark) {
@@ -259,7 +259,7 @@ PAGE = r"""<!doctype html>
       color-scheme: dark;
       --surface-0: #121211; --surface-1: #1a1a19; --border: #2e2e2c; --grid: #262624; --axis: #4a4a46;
       --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
-      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-5: #d55181;
       --neutral-mid: #2c2c2a; --reference: #c3c2b7;
     }
   }
@@ -267,7 +267,7 @@ PAGE = r"""<!doctype html>
     color-scheme: dark;
     --surface-0: #121211; --surface-1: #1a1a19; --border: #2e2e2c; --grid: #262624; --axis: #4a4a46;
     --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-5: #d55181;
     --neutral-mid: #2c2c2a; --reference: #c3c2b7;
   }
   * { box-sizing: border-box; }
@@ -465,10 +465,22 @@ function selectTab(tab) {
   state.tab = tab;
   renderTabs();
   selectTarget(targetsIn(tab)[0]);
-  renderTable();
 }
+// the seed with the best objective, within the method whose median best objective is lowest
+const finalBest = r => bestSoFar(r.y).at(-1) ?? Infinity;
+function bestRun(t) {
+  const runs = runsOf(t), score = m => median(runs.filter(r => r.method === m).map(finalBest));
+  const method = [...new Set(runs.map(r => r.method))].map(m => [score(m), m]).sort((a, b) => a[0] - b[0])[0]?.[1];
+  return runs.filter(r => r.method === method).sort((a, b) => finalBest(a) - finalBest(b))[0];
+}
+// every problem opens unfiltered, on its best method and seed
 function selectTarget(t) {
   state.target = t;
+  state.atoms = new Set(atoms);
+  const best = bestRun(t);
+  if (best) { state.method = best.method; state.seed = best.seed; }
+  renderAtoms();
+  renderTable();
   el("problems").innerHTML = targetsIn(state.tab).map(x => {
     const dims = `d=${TARGETS[x].d}${TARGETS[x].k > 1 ? `, k=${TARGETS[x].k}` : ""}`;
     return chip(`${problemLabel(x)} <span class="label">${dims}</span>`, x === t, `data-t="${x}"`);
@@ -700,16 +712,19 @@ function videoHtml(run, k) {
     <p class="meta" style="margin-top:6px">rollout of the best candidate (acquisition ${best + 1})</p>`;
 }
 // VS Code's HTML preview writes this page into a frame whose media elements cannot reach local files,
-// so there the outer frame fetches each video and the page plays it from a cached blob url
+// so there the outer frame fetches each video and the page plays it from a cached blob url,
+// from next to the page's own webview address (its host differs between local and remote windows)
 const inPreview = !/^(file|https?):$/.test(location.protocol) && DATA.root;
+const previewSettings = inPreview && window.parent.document.getElementById("preview-html-settings");
+const previewBase = previewSettings ? JSON.parse(previewSettings.dataset.settings).src
+  : `https://file+.vscode-resource.vscode-cdn.net${encodeURI(DATA.root)}/`;
 const videoBlobs = new Map();
 function loadVideos() {
   for (const video of el("detail").querySelectorAll("video[data-src]")) {
     const rel = video.dataset.src;
     if (!inPreview) { video.src = rel; continue; }
     if (!videoBlobs.has(rel)) {
-      const url = `https://file+.vscode-resource.vscode-cdn.net${encodeURI(DATA.root)}/${encodeURI(rel)}`;
-      videoBlobs.set(rel, window.parent.fetch(url)
+      videoBlobs.set(rel, window.parent.fetch(new URL(rel, previewBase))
         .then(r => r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`)))
         .then(blob => URL.createObjectURL(new Blob([blob], { type: "video/mp4" }))));
     }
@@ -771,7 +786,7 @@ else { renderTabs(); el("detail").innerHTML = el("conv").innerHTML = `<div class
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", default="results/sweep")
+    parser.add_argument("--results_dir", default="results/tbd/sweep")
     parser.add_argument(
         "--out", default=None, help="defaults to <results_dir>/dashboard.html"
     )

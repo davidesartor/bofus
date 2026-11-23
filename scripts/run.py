@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 from functools import partial
 
@@ -51,6 +52,7 @@ def run(
     a_range: tuple[Scalar, Scalar] = (jnp.asarray(-3.0), jnp.asarray(3.0)),
     fixed_l: float | None = None,
     distance: str = "rkhs",
+    atoms_per_dim: float = 0.0,
     save_path: str | None = None,
     checkpoint_every: int = 8,
     resume: tuple[rkhs.RBFMixture, Float[Array, "n"]] | None = None,
@@ -68,11 +70,14 @@ def run(
     l_max = d if l_max is None else l_max
     l_range = (jnp.asarray(l_min), jnp.asarray(l_max, dtype=float))
 
+    # input weight atoms linear in d, rounded up to a power of two; none gives the box weight
+    n_atoms = 1 if atoms_per_dim <= 0 else 1 << math.ceil(math.log2(atoms_per_dim * d))
+
     # closed loop control marks inputs folded from (sin, cos) pairs as wrapping
     periodic = getattr(target_fn, "periodic", None)
     x_range = (-1.0, 1.0)  # targets act on [-1, 1]^d
 
-    # rkhs distance at the smallest lengthscale, or L2 on the box
+    # rkhs distance at the smallest lengthscale, or L2 on the line
     l0 = jnp.broadcast_to(l_range[0], (d,)) if distance == "rkhs" else None
 
     # checkpoints record the known optimum of the target, nan if it has none
@@ -122,6 +127,7 @@ def run(
                 x_range=x_range,
                 l0=l0,
                 periodic=periodic,
+                n_atoms=n_atoms,
             )
             f_batch = acquisition.optimize_expected_improvement(
                 key_acq, surrogate, l_range, a_range, batch_size=batch_size
@@ -205,14 +211,22 @@ if __name__ == "__main__":
         default=None,
         help="share this squared lengthscale across atoms (non-adaptive ablation)",
     )
+    parser.add_argument(
+        "--atoms_per_dim",
+        type=float,
+        default=0.0,
+        help="input weight atoms per input dimension, rounded up to a power of two (0: box weight)",
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--results_dir", default="results/neurips")
+    parser.add_argument("--results_dir", default="results/tbd")
     args = parser.parse_args()
 
     target_fn = target_fns[args.target_fn]()
     profile = profiles_options[args.profile]
 
     method = "adaptive" if args.fixed_l is None else f"fixed_l{args.fixed_l:g}"
+    if args.atoms_per_dim > 0:
+        method += f"_rho{args.atoms_per_dim:g}"
     method = f"ours_{args.distance}_{method}"
     suite = suite_of(args.target_fn)
     save_dir = f"{args.results_dir}/{suite}/{args.target_fn}/{method}/{args.profile}"
@@ -240,6 +254,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         fixed_l=args.fixed_l,
         distance=args.distance,
+        atoms_per_dim=args.atoms_per_dim,
         save_path=save_path,
         resume=resume,
         verbose=args.verbose,
