@@ -53,12 +53,15 @@ def full_resolution(gym_defaults: bool):
         targets.HORIZONS.update(
             {k: gym.spec(k).max_episode_steps for k in targets.HORIZONS}
         )
+        targets.OPEN_LOOP_HORIZONS.clear()
         targets.OBSERVATION_KWARGS.clear()
 
-    def gym_make(env_id: str, make=targets.gym_make, **kwargs) -> gym.Env:
+    def gym_make(
+        env_id: str, open_loop: bool = False, make=targets.gym_make, **kwargs
+    ) -> gym.Env:
         if kwargs.get("render_mode") and "mujoco" in gym.spec(env_id).entry_point:
             kwargs |= dict(width=1920, height=1080)
-        return make(env_id, **kwargs)
+        return make(env_id, open_loop, **kwargs)
 
     targets.gym_make = gym_make
     targets.VideoRecorder = functools.partial(

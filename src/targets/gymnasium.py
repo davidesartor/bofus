@@ -27,6 +27,19 @@ HORIZONS = {
     "HumanoidStandup-v5": 600,  # 9 s: getting up takes several seconds
 }
 
+# shorter open-loop episodes for periodic tasks: the m bumps per action span the whole horizon,
+# so a long one leaves too few for a startup phase plus a couple of gait cycles
+OPEN_LOOP_HORIZONS = {
+    "Pendulum-v1": 100,  # 5 s: the swing-up and a short hold
+    "BipedalWalker-v3": 150,  # 3 s: about three strides
+    "BipedalWalkerHardcore-v3": 150,  # 3 s
+    "Swimmer-v5": 100,  # 4 s: one or two strokes
+    "Hopper-v5": 150,  # 1.2 s: about three hops
+    "Walker2d-v5": 200,  # 1.6 s: about two strides
+    "HalfCheetah-v5": 40,  # 2 s: four to six gait periods
+    "Ant-v5": 50,  # 2.5 s: a few gait periods
+}
+
 # observations reduced to joint positions and velocities, dropping contact and inertia terms
 HUMANOID_POSITIONS_VELOCITIES = dict(
     include_cinert_in_observation=False,
@@ -47,11 +60,12 @@ TERMINATION_KWARGS = {
 }
 
 
-def gym_make(env_id: str, **kwargs) -> gym.Env:
+def gym_make(env_id: str, open_loop: bool = False, **kwargs) -> gym.Env:
     """gym.make with the task's horizon, observation and termination settings."""
+    horizon = OPEN_LOOP_HORIZONS.get(env_id) if open_loop else None
     return gym.make(
         env_id,
-        max_episode_steps=HORIZONS[env_id],
+        max_episode_steps=horizon or HORIZONS[env_id],
         **OBSERVATION_KWARGS.get(env_id, {}),
         **TERMINATION_KWARGS.get(env_id, {}),
         **kwargs,
@@ -123,11 +137,11 @@ class VideoRecorder(gym.Wrapper):
         super().close()
 
 
-def make_env(env_id: str, video_dir: str | None) -> gym.Env:
+def make_env(env_id: str, video_dir: str | None, open_loop: bool = False) -> gym.Env:
     """Env, wrapped to record every episode to video_dir when given."""
     if video_dir is None:
-        return gym_make(env_id)
-    env = gym_make(env_id, render_mode="rgb_array")
+        return gym_make(env_id, open_loop)
+    env = gym_make(env_id, open_loop, render_mode="rgb_array")
 
     # gymnasium 1.4 swaps the model's tracking camera for a static free one unless named
     renderer = getattr(env.unwrapped, "mujoco_renderer", None)
@@ -191,7 +205,7 @@ class Pendulum:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -245,7 +259,7 @@ class MountainCarContinuous:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -307,7 +321,7 @@ class LunarLanderContinuous:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -373,7 +387,7 @@ class BipedalWalker:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -439,7 +453,7 @@ class BipedalWalkerHardcore:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -497,7 +511,7 @@ class InvertedPendulum:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -553,7 +567,7 @@ class InvertedDoublePendulum:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -619,7 +633,7 @@ class Reacher:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -636,7 +650,10 @@ class Reacher:
                         np.array([theta_1, theta_2, *rest]), self.low, self.high
                     )
                 u = f(x, **f_kwargs)
-                action = squash(u, env.action_space.low, env.action_space.high)
+                # gear 200 makes |a| = 1 spin the arm at ~130 rad/s, a good reach needs ~0.02
+                action = squash(
+                    u, 0.1 * env.action_space.low, 0.1 * env.action_space.high
+                )
                 obs, reward, terminated, truncated, _ = env.step(action)
                 if not (np.isfinite(reward) and np.isfinite(obs).all()):
                     break
@@ -683,7 +700,7 @@ class Swimmer:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -739,7 +756,7 @@ class Hopper:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -800,7 +817,7 @@ class Walker2d:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -864,7 +881,7 @@ class HalfCheetah:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -901,8 +918,10 @@ class Pusher:
         n_rollouts: int = 1,  # one object placement for now
         open_loop: bool = False,
         video_dir: str | None = None,
+        progress_weight: float = 1.0,
     ):
         self.env_id = "Pusher-v5"
+        self.progress_weight = progress_weight
         self.n_rollouts = n_rollouts
         self.open_loop = open_loop
         self.video_dir = video_dir
@@ -935,12 +954,13 @@ class Pusher:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
-        returns = []
+        returns, closest = [], []
         for seed in range(self.n_rollouts):
             obs, _ = env.reset(seed=seed)
             total, done, step = 0.0, False, 0
+            min_object_to_goal = np.linalg.norm(obs[17:20] - obs[20:23])
             while not done:
                 if self.open_loop:
                     x = normalized_time(step, env.spec.max_episode_steps)
@@ -948,16 +968,26 @@ class Pusher:
                     # object z and goal xyz are constant
                     x = rescale(obs[:19], self.low, self.high)
                 u = f(x, **f_kwargs)
-                action = squash(u, env.action_space.low, env.action_space.high)
+                # full torque flails the arm, worse than idle; random policies at 0.25 beat idling
+                action = squash(
+                    u, 0.25 * env.action_space.low, 0.25 * env.action_space.high
+                )
                 obs, reward, terminated, truncated, _ = env.step(action)
                 if not (np.isfinite(reward) and np.isfinite(obs).all()):
                     break
                 total += float(reward)
+                min_object_to_goal = min(
+                    min_object_to_goal, np.linalg.norm(obs[17:20] - obs[20:23])
+                )
                 done = terminated or truncated
                 step += 1
             returns.append(total)
+            closest.append(min_object_to_goal)
         env.close()
-        return -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
+
+        # reward the puck's closest approach to the goal, which the averaged reward_dist barely sees
+        cost = -jnp.mean(jnp.array(returns)) / env.spec.max_episode_steps
+        return cost + self.progress_weight * jnp.mean(jnp.array(closest))
 
 
 class Ant:
@@ -1001,7 +1031,7 @@ class Ant:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -1082,7 +1112,7 @@ class Humanoid:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):
@@ -1163,7 +1193,7 @@ class HumanoidStandup:
         ).T
 
     def __call__(self, f: Callable[..., Float[Array, "k"]], **f_kwargs) -> Scalar:
-        env = make_env(self.env_id, self.video_dir)
+        env = make_env(self.env_id, self.video_dir, self.open_loop)
 
         returns = []
         for seed in range(self.n_rollouts):

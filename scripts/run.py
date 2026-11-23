@@ -90,6 +90,9 @@ def run(
         # initial design from the mixture prior of the first stage
         shape = (initial_acquisitions, k, schedule[0], d)
         fs = rkhs.RBFMixture.sample(key_init, shape, l_range, a_range, x_range)
+        # control targets: the first design point is the zero action (idle), a floor to beat
+        if hasattr(target_fn, "env_id"):
+            fs = fs._replace(a=fs.a.at[0].set(0.0))
         ys = []
         for i in range(initial_acquisitions):
             f = jax.tree.map(lambda z: z[i], fs)
